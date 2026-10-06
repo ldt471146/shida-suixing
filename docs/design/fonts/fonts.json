@@ -1,0 +1,62 @@
+{
+  "retrieved": "2026-10-06",
+  "fonttools_version": "4.62.1",
+  "sources": [
+    {
+      "filename": "NotoSansSC-variable.ttf",
+      "url": "https://github.com/google/fonts/tree/main/ofl/notosanssc",
+      "sha256": "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
+      "git_blob_sha1": "fb0637bafbcd804fe32152370a1225990745b4bc",
+      "copyright": "(c) 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'."
+    },
+    {
+      "filename": "PlusJakartaSans-variable.ttf",
+      "url": "https://github.com/google/fonts/tree/main/ofl/plusjakartasans",
+      "sha256": "89b3fb38aa0d275d7a731d0d817a4f1622b316b4d7fbdedcf02ee9099ff68bc8",
+      "git_blob_sha1": "0cb13a998ed525ba226d911b10d6c4c4f923a961",
+      "copyright": "Copyright 2020 The Plus Jakarta Sans Project Authors (https://github.com/tokotype/PlusJakartaSans)"
+    }
+  ],
+  "fonts": [
+    {
+      "resource": "campus_sans_regular",
+      "filename": "campus_sans_regular.ttf",
+      "weight": 400,
+      "bytes": 2448744,
+      "unicode_characters": 7607,
+      "sha256": "eee1f5d9a079d92eddac72998f60e6c2e58b6b716c2d8b8f3224540cb50a5578",
+      "family": "Campus Sans SC",
+      "source": "NotoSansSC-variable.ttf"
+    },
+    {
+      "resource": "campus_sans_semibold",
+      "filename": "campus_sans_semibold.ttf",
+      "weight": 600,
+      "bytes": 2446848,
+      "unicode_characters": 7607,
+      "sha256": "6475f63aead493f562814986d6989d82f0858f2700965f91c8f43940267d03a4",
+      "family": "Campus Sans SC",
+      "source": "NotoSansSC-variable.ttf"
+    },
+    {
+      "resource": "campus_latin_medium",
+      "filename": "campus_latin_medium.ttf",
+      "weight": 500,
+      "bytes": 105048,
+      "unicode_characters": 721,
+      "sha256": "529ca6454e911ff68842ac1b6c9a4a71c44e65c2d38e6b483a170684d5a9a87d",
+      "family": "Campus Latin",
+      "source": "PlusJakartaSans-variable.ttf"
+    },
+    {
+      "resource": "campus_latin_bold",
+      "filename": "campus_latin_bold.ttf",
+      "weight": 700,
+      "bytes": 104956,
+      "unicode_characters": 721,
+      "sha256": "44745cabaf1eb7f00ca422f6768dda4ba6dce1e4a01e68d240eb416be263539e",
+      "family": "Campus Latin",
+      "source": "PlusJakartaSans-variable.ttf"
+    }
+  ]
+}
