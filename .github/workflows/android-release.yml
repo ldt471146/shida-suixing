@@ -51,6 +51,11 @@ jobs:
             if [ -n "$VISION_API_KEY" ]; then echo "vision.apiKey=$VISION_API_KEY"; fi
           } > local.properties
 
+      # Windows checkouts do not carry the executable bit, so the wrapper arrives non-executable
+      # on the runner even when the index mode is set correctly.
+      - name: Make the Gradle wrapper executable
+        run: chmod +x gradlew
+
       - name: Test, lint and assemble
         run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleRelease --console=plain
 

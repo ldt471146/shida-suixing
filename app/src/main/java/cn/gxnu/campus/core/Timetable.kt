@@ -1,5 +1,7 @@
 package cn.gxnu.campus.core
 
+import java.time.LocalDate
+
 /** Weekday numbering used by the model contract and the grid: 1 = 周一 … 7 = 周日. */
 val TIMETABLE_WEEKDAYS: List<String> = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
@@ -29,6 +31,14 @@ data class TimetableCourse(
     val weekLabel: String
         get() = if (startWeek == endWeek) "第${startWeek}周${parity.label}" else "$startWeek-$endWeek 周${parity.label}"
     val detailLabel: String get() = listOf(teacher, room).filter { it.isNotBlank() }.joinToString(" · ")
+
+    /** Whether this course is actually taught in teaching week [week]; 单双周 is honoured here. */
+    fun runsInWeek(week: Int): Boolean =
+        week in startWeek..endWeek && when (parity) {
+            WeekParity.ALL -> true
+            WeekParity.ODD -> week % 2 == 1
+            WeekParity.EVEN -> week % 2 == 0
+        }
 }
 
 data class Timetable(
@@ -37,6 +47,17 @@ data class Timetable(
     val recognizedAtMillis: Long
 ) {
     val courseCount: Int get() = courses.size
+
+    /** The last teaching week any course reaches, so the week switcher never offers an empty tail. */
+    val weekCount: Int get() = courses.maxOfOrNull { it.endWeek }?.coerceIn(1, TIMETABLE_MAX_WEEKS) ?: 1
+
+    /** The distinct courses taught in [week], in timetable order. */
+    fun coursesInWeek(week: Int): List<TimetableCourse> =
+        courses.filter { it.runsInWeek(week) }.sortedWith(compareBy({ it.weekday }, { it.startPeriod }))
+
+    /** What is taught on [weekday] of [week]; the 今日课程 list is built from this. */
+    fun coursesOn(weekday: Int, week: Int): List<TimetableCourse> =
+        coursesInWeek(week).filter { it.weekday == weekday }
 }
 
 /** Untrusted values as decoded from the model's JSON: one nullable string per documented key. */
@@ -48,7 +69,9 @@ data class TimetableCourseDraft(
     val startPeriod: String? = null,
     val endPeriod: String? = null,
     val startWeek: String? = null,
-    val endWeek: String? = null
+    val endWeek: String? = null,
+    /** 单双周 as stated by the source; the week range alone cannot carry it. */
+    val parity: String? = null
 )
 
 data class TimetableDraft(val term: String? = null, val courses: List<TimetableCourseDraft> = emptyList())
