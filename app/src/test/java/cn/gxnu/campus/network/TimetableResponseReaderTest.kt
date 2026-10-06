@@ -1,8 +1,10 @@
 package cn.gxnu.campus.network
 
+import cn.gxnu.campus.core.WeekParity
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -60,6 +62,36 @@ class TimetableResponseReaderTest {
         val failure = failureOf("""{"is_timetable":true,"term":"","courses":[]}""")
         assertEquals(TimetableVisionFailure.NOT_A_TIMETABLE, failure.failure)
         assertTrue(failure.message!!.contains("没有识别到课表"))
+    }
+
+    @Test fun theDeclaredParityIsKeptForEachCourse() {
+        val payload = """
+            {"is_timetable":true,"term":"","courses":[
+              {"name":"单周课-fixture","weekday":1,"start_period":1,"end_period":2,
+               "start_week":1,"end_week":16,"parity":"odd"},
+              {"name":"双周课-fixture","weekday":1,"start_period":1,"end_period":2,
+               "start_week":1,"end_week":16,"parity":"even"}
+            ]}
+        """.trimIndent()
+        // 单周 and 双周 subjects sharing one slot is normal on a real timetable, not a conflict.
+        val timetable = TimetableResponseReader.read(envelopeOf(payload), TIME)
+        assertEquals(2, timetable.courseCount)
+        assertEquals(WeekParity.ODD, timetable.courses.first { it.name == "单周课-fixture" }.parity)
+        assertEquals(WeekParity.EVEN, timetable.courses.first { it.name == "双周课-fixture" }.parity)
+        assertTrue(timetable.courses.first { it.name == "单周课-fixture" }.runsInWeek(3))
+        assertFalse(timetable.courses.first { it.name == "单周课-fixture" }.runsInWeek(4))
+    }
+
+    @Test fun parityPrintedInsideTheWeekRangeIsStillUnderstood() {
+        val payload = """
+            {"is_timetable":true,"term":"","courses":[
+              {"name":"单周课-fixture","weekday":2,"start_period":3,"end_period":4,
+               "start_week":"1-16周(单)","end_week":""}
+            ]}
+        """.trimIndent()
+        val course = TimetableResponseReader.read(envelopeOf(payload), TIME).courses.single()
+        assertEquals(WeekParity.ODD, course.parity)
+        assertEquals(16, course.endWeek)
     }
 
     @Test fun aMissingFlagIsJudgedByThePresenceOfCourses() {

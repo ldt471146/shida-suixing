@@ -1,5 +1,6 @@
 package cn.gxnu.campus.network
 
+import cn.gxnu.campus.BuildConfig
 import cn.gxnu.campus.core.Timetable
 import cn.gxnu.campus.core.TimetableException
 import cn.gxnu.campus.core.TimetableFailure
@@ -95,6 +96,60 @@ fun interface VisionHttpTransport {
     suspend fun post(request: VisionHttpRequest): VisionHttpResponse
 }
 
+/**
+ * Where recognition requests go. The endpoint is compiled into the build so the shipped app needs
+ * no setup, and the manual-key entry only exists for a build that ships without one.
+ *
+ * An API key is a bearer credential, so the request may only ever reach the one origin the build
+ * was configured for: [chatCompletions] derives the only acceptable URL from a base that is itself
+ * checked to be HTTPS, user-info-free and query-free, and [rejectionReason] then insists the request
+ * URL is exactly that derived string. Anything else — a redirect, a tampered host, a plain-HTTP
+ * base — is refused before the key is attached.
+ */
+object VisionEndpoint {
+    const val CHAT_COMPLETIONS_PATH = "/chat/completions"
+
+    /** Used only by a build whose own endpoint is blank; the manual-key path targets this. */
+    const val FALLBACK_BASE_URL = "https://api.deepseek.com"
+
+    /**
+     * [baseUrl] plus the chat-completions path, or null when that base cannot be trusted with a key.
+     * A trailing slash is normalised, so both `https://host/v1` and `https://host/v1/` are accepted.
+     */
+    fun chatCompletions(baseUrl: String): String? {
+        val base = baseUrl.trim().trimEnd('/')
+        if (base.isEmpty()) return null
+        val url = try { URL(base) } catch (_: Exception) { null } ?: return null
+        if (url.protocol != "https") return null
+        if (url.userInfo != null) return null
+        if (url.host.isNullOrBlank()) return null
+        if (url.query != null || url.ref != null) return null
+        return base + CHAT_COMPLETIONS_PATH
+    }
+
+    /** The endpoint this build is configured to use. */
+    fun configuredBaseUrl(): String = BuildConfig.VISION_BASE_URL.trim().ifEmpty { FALLBACK_BASE_URL }
+
+    /** Why [endpoint] must not receive the key, or null when it is the configured endpoint. */
+    fun rejectionReason(endpoint: String, baseUrl: String): String? {
+        val expected = chatCompletions(baseUrl) ?: return MISCONFIGURED
+        return if (endpoint == expected) null else MISCONFIGURED
+    }
+
+    private const val MISCONFIGURED = "识别服务地址配置有误，请更新应用。"
+}
+
+/**
+ * The credentials folded into the build. When both are present the recognition service works with
+ * no setup at all and the key-entry screen is never shown; when either is blank the app falls back
+ * to the encrypted on-device vault.
+ */
+object VisionBuiltInCredentials {
+    val apiKey: String get() = BuildConfig.VISION_API_KEY.trim()
+    val baseUrl: String get() = VisionEndpoint.configuredBaseUrl()
+    val available: Boolean get() = apiKey.isNotEmpty() && VisionEndpoint.chatCompletions(baseUrl) != null
+}
+
 interface TimetableVisionClient {
     /** Reads the timetable out of [image], or throws [TimetableVisionException]. */
     suspend fun recognize(image: TimetableImage, apiKey: String): Timetable
@@ -102,10 +157,14 @@ interface TimetableVisionClient {
 
 class HttpTimetableVisionClient internal constructor(
     private val transport: VisionHttpTransport,
-    private val endpoint: String = CHAT_COMPLETIONS_ENDPOINT,
+    private val baseUrl: String = VisionEndpoint.configuredBaseUrl(),
     private val now: () -> Long = System::currentTimeMillis
 ) : TimetableVisionClient {
+
     constructor() : this(HttpsVisionTransport())
+    constructor(baseUrl: String) : this(HttpsVisionTransport(), baseUrl)
+
+    private val endpoint: String = VisionEndpoint.chatCompletions(baseUrl).orEmpty()
 
     override suspend fun recognize(image: TimetableImage, apiKey: String): Timetable {
         val key = apiKey.trim()
@@ -117,7 +176,9 @@ class HttpTimetableVisionClient internal constructor(
         VisionImageLimits.rejectionReason(image)?.let {
             throw TimetableVisionException(TimetableVisionFailure.TOO_LARGE, it)
         }
-        requireEndpoint(endpoint)
+        VisionEndpoint.rejectionReason(endpoint, baseUrl)?.let {
+            throw TimetableVisionException(TimetableVisionFailure.INVALID_REQUEST, it)
+        }
         val request = VisionHttpRequest(
             url = endpoint,
             headers = linkedMapOf(
@@ -183,10 +244,11 @@ class HttpTimetableVisionClient internal constructor(
         }
         val root = JsonObject().apply {
             addProperty("model", MODEL)
+            // A dense timetable needs the model to actually look; a low effort budget misreads it.
+            addProperty("reasoning_effort", REASONING_EFFORT)
             add("messages", messages)
             add("response_format", JsonObject().apply { addProperty("type", "json_object") })
-            // Extraction wants the answer, not a chain of thought: that also keeps latency low.
-            add("thinking", JsonObject().apply { addProperty("type", "disabled") })
+            // Extraction wants the answer, not a chain of thought.
             addProperty("temperature", 0)
             addProperty("max_tokens", MAX_RESPONSE_TOKENS)
             addProperty("stream", false)
@@ -194,21 +256,10 @@ class HttpTimetableVisionClient internal constructor(
         return root.toString().toByteArray(Charsets.UTF_8)
     }
 
-    /** The key travels to exactly one origin; anything else must not receive it. */
-    private fun requireEndpoint(endpoint: String) {
-        val url = try { URL(endpoint) } catch (_: Exception) { null }
-        if (url == null || url.protocol != "https" || url.userInfo != null ||
-            url.host != VISION_API_HOST || url.path != CHAT_COMPLETIONS_PATH) {
-            throw TimetableVisionException(TimetableVisionFailure.INVALID_REQUEST, "识别服务地址配置有误，请更新应用。")
-        }
-    }
-
     companion object {
-        const val VISION_API_HOST = "api.deepseek.com"
-        const val CHAT_COMPLETIONS_PATH = "/chat/completions"
-        const val CHAT_COMPLETIONS_ENDPOINT = "https://$VISION_API_HOST$CHAT_COMPLETIONS_PATH"
-        const val MODEL = "deepseek-flash"
-        private const val MAX_RESPONSE_TOKENS = 4_096
+        const val MODEL = "deepseek-v4.1-flash"
+        const val REASONING_EFFORT = "high"
+        private const val MAX_RESPONSE_TOKENS = 8_192
 
         private const val USER_PROMPT = "请识别这张课表图片，并按上面的 json 格式输出。"
 
@@ -229,7 +280,8 @@ class HttpTimetableVisionClient internal constructor(
                   "start_period": 1,
                   "end_period": 2,
                   "start_week": 1,
-                  "end_week": 16
+                  "end_week": 16,
+                  "parity": "all"
                 }
               ]
             }
@@ -237,9 +289,12 @@ class HttpTimetableVisionClient internal constructor(
             规则：
             1. weekday 是 1-7 的整数，1 表示周一，7 表示周日。
             2. start_period/end_period 是节次整数，start_week/end_week 是周次整数，一律使用阿拉伯数字。
-            3. 图片中没有的信息填空字符串，不要编造教师、教室或周次。
+            3. parity 表示单双周：每周都上课填 "all"，只在单周上课填 "odd"，只在双周上课填 "even"。
             4. 连堂（如第 1-2 节）只输出一条记录，用 start_period 与 end_period 表示范围。
-            5. 如果图片不是课程表，或完全看不清课程内容，输出 {"is_timetable": false, "term": "", "courses": []}。
+            5. 同一门课在同一星期出现多次时，每次占用不同节次就各输出一条记录。
+            6. 图片中没有的信息填空字符串，不要编造教师、教室或周次。
+            7. 只输出课程表范围内的课程，忽略表头、上课时间、备注等非课程内容。
+            8. 如果图片不是课程表，或完全看不清课程内容，输出 {"is_timetable": false, "term": "", "courses": []}。
         """.trimIndent()
     }
 }
@@ -287,7 +342,8 @@ internal object TimetableResponseReader {
         startPeriod = firstScalar(value, "start_period", "period_start", "start_section"),
         endPeriod = firstScalar(value, "end_period", "period_end", "end_section"),
         startWeek = firstScalar(value, "start_week", "week_start"),
-        endWeek = firstScalar(value, "end_week", "week_end")
+        endWeek = firstScalar(value, "end_week", "week_end"),
+        parity = firstScalar(value, "parity", "week_parity", "week_type")
     )
 
     private fun firstScalar(value: JsonObject, vararg keys: String): String? =

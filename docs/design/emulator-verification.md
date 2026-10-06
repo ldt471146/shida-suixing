@@ -39,6 +39,29 @@
 
 本文记录实际设备操作，不替代 Comet Runtime 的候选检查及独立验收。完整单元测试、APK 构建及 lint 的最终结果由 Runtime 保存。
 
+## 0.4.0 检查
+
+2026-10-06 / 10-07，在同一 `gxnu_preview` 模拟器上检查 0.4.0（versionCode 7）：
+
+- 构建、更新安装与启动成功，`FATAL EXCEPTION` 计数为 0。清理构建后 27 个测试套件 285 项全绿，`lintDebug` 0 错误，`assembleRelease` 产出 11,118,690 字节的签名包，证书指纹 `9aecff4b…29cb` 与发布密钥一致。
+- 首页、服务、课表、我的与账号页均为新版视觉：软灰画布、白色浮起卡片、单一蓝色主操作、描边图标、状态胶囊。深色主题同步更新。
+- 课表端到端跑通（用真实接口，非模拟）：选图 → 上传 → 识别 → 渲染 → 落盘 → 重装后重新读取。合成课表图含 13 门课（含单双周标注与合并单元格），识别出 12 门，教师与教室均正确。周次筛选经核对：双周限定的课在第 1 周不出现。
+- 设置开学日期后自动定位到当前周（第 3 周，10月5日–10月11日），并显示「当前周」胶囊；未设置时按第 1 周显示并提示。
+- 点课程打开详情面板，显示上课时间、上课周次、单双周、任课教师、上课地点与当周是否有课。
+- 周课表网格：五天全部显示且无需横向滚动，课程名按两字换行可读，每格显示教室，当天列用强调色胶囊标记。
+
+| 场景 | 证据 |
+| --- | --- |
+| 课表空状态 | [课表空状态](screenshots/v6-timetable-empty.png) |
+| 识别中 | [识别中](screenshots/v6-timetable-recognising.png) |
+| 识别完成（12 门课） | [识别完成](screenshots/v6-timetable-recognized.png) |
+| 当前周与今日课程 | [当前周](screenshots/v6-timetable-currentweek.png) |
+| 课程详情面板 | [详情](screenshots/v6-timetable-detail.png) |
+| 周课表网格 | [周课表](screenshots/v6-timetable-grid.png) |
+| 设置开学日期 | [开学日期](screenshots/v6-timetable-termstart.png) |
+
+**更新流程未在设备上端到端验证**：仓库标签数为 0，`releases/latest` 返回 404，应用如实显示「暂无发布版本」。下载与系统安装确认需要先有一个已发布的 Release，且安装确认行为需在实体手机上确认。
+
 ## 0.3.0 检查
 
 2026-10-06，在同一 `gxnu_preview` 模拟器上检查 0.3.0（versionCode 6）：

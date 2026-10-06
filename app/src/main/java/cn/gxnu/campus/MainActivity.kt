@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -22,6 +23,7 @@ import cn.gxnu.campus.network.VisiblePortalSession
 import cn.gxnu.campus.network.WifiEnvironment
 import cn.gxnu.campus.ui.CampusApp
 import cn.gxnu.campus.ui.CampusEvent
+import cn.gxnu.campus.ui.UpdateController
 import cn.gxnu.campus.ui.screens.OfficialPortalScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -31,6 +33,7 @@ class MainActivity : ComponentActivity() {
     private val campusViewModel: CampusViewModel by viewModels()
     private var preview = false
     private val embeddedPortal = mutableStateOf<VisiblePortalSession?>(null)
+    private val updateController by lazy { UpdateController.of(application) }
     private val permissions = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { if (!preview) campusViewModel.refreshPermissions() }
@@ -47,6 +50,9 @@ class MainActivity : ComponentActivity() {
             setContent { CampusApp(controller.state.collectAsStateWithLifecycle().value, controller) }
         } else {
             val model = campusViewModel
+            val updates = updateController
+            // One check per app start; the controller keeps the result for the rest of the process.
+            updates.checkOnLaunch()
             lifecycleScope.launch {
                 repeatOnLifecycle(Lifecycle.State.STARTED) {
                     model.events.collect { event ->
@@ -59,7 +65,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
             setContent {
-                CampusApp(model.uiState.collectAsStateWithLifecycle().value, model)
+                val updateState by updates.state.collectAsStateWithLifecycle()
+                CampusApp(model.uiState.collectAsStateWithLifecycle().value, model, updates, updateState)
                 embeddedPortal.value?.let { session ->
                     BackHandler(enabled = true) { closeEmbeddedPortal() }
                     OfficialPortalScreen(session = session, onClose = { closeEmbeddedPortal() })
@@ -117,6 +124,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (!preview) campusViewModel.refreshPermissions()
+        if (preview) return
+        campusViewModel.refreshPermissions()
+        // The unknown-sources setting is a separate screen, so the install resumes here.
+        updateController.onResume()
     }
 }

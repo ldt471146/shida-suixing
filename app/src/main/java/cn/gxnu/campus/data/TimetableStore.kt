@@ -5,7 +5,6 @@ import cn.gxnu.campus.core.Timetable
 import cn.gxnu.campus.core.TimetableCourseDraft
 import cn.gxnu.campus.core.TimetableException
 import cn.gxnu.campus.core.TimetableValidator
-import cn.gxnu.campus.core.WeekParity
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -19,6 +18,11 @@ internal interface TimetableStorage {
     fun read(): String?
     fun write(value: String)
     fun remove()
+
+    /** Epoch day of the Monday the term starts on, or null while the user has not set it. */
+    fun readTermStart(): Long?
+    fun writeTermStart(epochDay: Long)
+    fun removeTermStart()
 }
 
 /** The timetable is not a secret, so unlike [VisionApiKeyStore] it needs no cipher. */
@@ -32,8 +36,32 @@ class TimetableStore internal constructor(private val storage: TimetableStorage)
 
     fun clear() = safely { storage.remove() }
 
+    /**
+     * The term's first Monday. It is what turns "which week is it" from a guess into a calculation,
+     * so it is stored beside the timetable and survives re-recognising one.
+     */
+    fun loadTermStart(): Long? = try {
+        storage.readTermStart()?.takeIf { it in MIN_TERM_START_EPOCH_DAY..MAX_TERM_START_EPOCH_DAY }
+    } catch (_: Exception) {
+        null
+    }
+
+    fun saveTermStart(epochDay: Long) = safely {
+        if (epochDay !in MIN_TERM_START_EPOCH_DAY..MAX_TERM_START_EPOCH_DAY) throw IllegalArgumentException("term start out of range")
+        storage.writeTermStart(epochDay)
+    }
+
+    fun clearTermStart() = safely { storage.removeTermStart() }
+
     private inline fun <T> safely(block: () -> T): T = try { block() }
     catch (_: Exception) { throw TimetableStorageException() }
+
+    private companion object {
+        // 1970-01-01 through 2100-01-01: wide enough for any real term, narrow enough to reject a
+        // corrupted value that would otherwise compute an absurd current week.
+        const val MIN_TERM_START_EPOCH_DAY = 0L
+        const val MAX_TERM_START_EPOCH_DAY = 47_482L
+    }
 }
 
 class TimetableStorageException : Exception("课表暂时无法保存，请稍后重试。")
@@ -79,7 +107,8 @@ internal object TimetableJson {
         } catch (_: Exception) { null } ?: return null
         if ((root.get("version")?.takeIf { it.isJsonPrimitive }?.asInt) != SCHEMA_VERSION) return null
         val courses = root.get("courses")?.takeIf { it.isJsonArray }?.asJsonArray ?: return null
-        // Parity is stored beside the draft because the model contract does not carry it.
+        // Parity is stored beside the draft and goes back in through the draft, so a 单周 course and
+        // a 双周 course sharing one slot are re-validated as a legal pair rather than as a conflict.
         val entries = courses.mapNotNull { element ->
             val course = element.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
             TimetableCourseDraft(
@@ -90,17 +119,12 @@ internal object TimetableJson {
                 startPeriod = text(course, "start_period"),
                 endPeriod = text(course, "end_period"),
                 startWeek = text(course, "start_week"),
-                endWeek = text(course, "end_week")
-            ) to parityOf(course)
+                endWeek = text(course, "end_week"),
+                parity = text(course, "parity")
+            )
         }
         return try {
-            TimetableValidator.build(text(root, "term"), entries.map { it.first }, recognizedAt(root))
-                .let { timetable ->
-                    // The validator keeps one course per draft, in order, so the pair stays aligned.
-                    timetable.copy(courses = timetable.courses.mapIndexed { index, course ->
-                        course.copy(parity = entries[index].second)
-                    })
-                }
+            TimetableValidator.build(text(root, "term"), entries, recognizedAt(root))
         } catch (_: TimetableException) { null }
     }
 
@@ -109,11 +133,6 @@ internal object TimetableJson {
 
     private fun recognizedAt(root: JsonObject): Long =
         root.get("recognized_at")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L
-
-    private fun parityOf(course: JsonObject): WeekParity {
-        val name = text(course, "parity") ?: return WeekParity.ALL
-        return WeekParity.entries.firstOrNull { it.name == name } ?: WeekParity.ALL
-    }
 }
 
 private class AndroidTimetableStorage(context: Context) : TimetableStorage {
@@ -124,4 +143,13 @@ private class AndroidTimetableStorage(context: Context) : TimetableStorage {
         check(preferences.edit().putString("timetable_payload", value).commit())
     }
     override fun remove() { check(preferences.edit().remove("timetable_payload").commit()) }
+
+    override fun readTermStart(): Long? =
+        preferences.getLong("term_start_epoch_day", Long.MIN_VALUE).takeIf { it != Long.MIN_VALUE }
+
+    override fun writeTermStart(epochDay: Long) {
+        check(preferences.edit().putLong("term_start_epoch_day", epochDay).commit())
+    }
+
+    override fun removeTermStart() { check(preferences.edit().remove("term_start_epoch_day").commit()) }
 }

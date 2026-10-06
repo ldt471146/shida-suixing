@@ -11,6 +11,7 @@ import cn.gxnu.campus.network.TimetableImage
 import cn.gxnu.campus.network.TimetableVisionClient
 import cn.gxnu.campus.network.TimetableVisionException
 import cn.gxnu.campus.network.TimetableVisionFailure
+import java.time.LocalDate
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import kotlinx.coroutines.CoroutineScope
@@ -31,12 +32,16 @@ class TimetableControllerTest {
 
     private class MemoryTimetableStorage(private val failWrites: Boolean = false) : TimetableStorage {
         var value: String? = null
+        var termStart: Long? = null
         override fun read(): String? = value
         override fun write(value: String) {
             if (failWrites) throw IllegalStateException("fixture disk full")
             this.value = value
         }
         override fun remove() { value = null }
+        override fun readTermStart(): Long? = termStart
+        override fun writeTermStart(epochDay: Long) { termStart = epochDay }
+        override fun removeTermStart() { termStart = null }
     }
 
     private class MemoryCiphertext : CiphertextStorage {
@@ -61,7 +66,9 @@ class TimetableControllerTest {
     private fun TestScope.controller(
         client: TimetableVisionClient = FakeVisionClient { TIMETABLE },
         storage: TimetableStorage = MemoryTimetableStorage(),
-        keyStorage: CiphertextStorage = MemoryCiphertext()
+        keyStorage: CiphertextStorage = MemoryCiphertext(),
+        builtInKey: String = "",
+        today: LocalDate = TODAY
     ) = TimetableController(
         client = client,
         store = TimetableStore(storage),
@@ -69,7 +76,9 @@ class TimetableControllerTest {
         // An own unconfined scope, because runTest's backgroundScope work is not run by
         // advanceUntilIdle and it would stall the controller's own coroutines.
         scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler)),
-        dispatcher = UnconfinedTestDispatcher(testScheduler)
+        dispatcher = UnconfinedTestDispatcher(testScheduler),
+        builtInKey = builtInKey,
+        today = { today }
     )
 
     private fun keyVault(apiKey: String): MemoryCiphertext = MemoryCiphertext().also {
@@ -271,8 +280,168 @@ class TimetableControllerTest {
         assertNull(controller.state.value.message)
     }
 
+    // ---- the endpoint compiled into the build -------------------------------------------------
+
+    @Test fun aBuiltInKeyRecognisesWithNoSetupAtAll() = runTest {
+        val keyStorage = MemoryCiphertext()
+        val client = FakeVisionClient { TIMETABLE }
+        val controller = controller(client, keyStorage = keyStorage, builtInKey = BUILT_IN_KEY)
+        controller.restore()
+        advanceUntilIdle()
+
+        val restored = controller.state.value
+        assertTrue(restored.builtInKey)
+        // Nothing was ever entered, so there is no key screen to show and no key to store.
+        assertFalse(restored.keyConfigured)
+        assertEquals("", restored.keyHint)
+
+        controller.useImage(IMAGE)
+        advanceUntilIdle()
+
+        val state = controller.state.value
+        assertEquals(1, client.calls)
+        assertEquals(BUILT_IN_KEY, client.lastKey)
+        assertEquals(TIMETABLE, state.timetable)
+        assertNull(state.failure)
+        // The build's key is never written into the encrypted vault.
+        assertNull(VisionApiKeyStore(keyStorage, CredentialKeyAccess { vaultKey }).load())
+    }
+
+    @Test fun aBuiltInKeyStillGoesThroughTheVaultWhenTheBuildHasNone() = runTest {
+        val client = FakeVisionClient { TIMETABLE }
+        val controller = controller(client, keyStorage = keyVault("sk-fixture-abcdef"))
+        controller.restore()
+        advanceUntilIdle()
+        controller.useImage(IMAGE)
+        advanceUntilIdle()
+        // The fallback path is unchanged: the stored key is the one that travels.
+        assertEquals("sk-fixture-abcdef", client.lastKey)
+        assertEquals(TIMETABLE, controller.state.value.timetable)
+    }
+
+    // ---- week navigation ----------------------------------------------------------------------
+
+    @Test fun aFreshTimetableOpensOnTheCurrentWeekOnceTheTermStartIsSet() = runTest {
+        val storage = MemoryTimetableStorage().also {
+            it.termStart = TERM_START_EPOCH_DAY
+            TimetableStore(it).save(TIMETABLE)
+        }
+        val controller = controller(storage = storage)
+        controller.restore()
+        advanceUntilIdle()
+
+        val state = controller.state.value
+        assertEquals(TERM_START_EPOCH_DAY, state.termStartEpochDay)
+        assertEquals(16, state.weekCount)
+        assertEquals(3, state.currentWeek)
+        assertEquals(3, state.selectedWeek)
+        assertEquals(2, state.todayWeekday)
+    }
+
+    @Test fun withoutATermStartTheCurrentWeekIsOneRatherThanAGuess() = runTest {
+        val controller = controller(keyStorage = keyVault(FIXTURE_KEY))
+        controller.restore()
+        advanceUntilIdle()
+        controller.useImage(IMAGE)
+        advanceUntilIdle()
+        val state = controller.state.value
+        assertEquals(TIMETABLE, state.timetable)
+        assertNull(state.termStartEpochDay)
+        assertEquals(1, state.currentWeek)
+        assertEquals(1, state.selectedWeek)
+    }
+
+    @Test fun settingTheTermStartJumpsToTheCurrentWeek() = runTest {
+        val storage = MemoryTimetableStorage()
+        val controller = controller(storage = storage, keyStorage = keyVault(FIXTURE_KEY))
+        controller.restore()
+        advanceUntilIdle()
+        controller.useImage(IMAGE)
+        advanceUntilIdle()
+        assertEquals(TIMETABLE, controller.state.value.timetable)
+        controller.selectWeek(1)
+
+        controller.setTermStart(TERM_START_EPOCH_DAY)
+        advanceUntilIdle()
+
+        val state = controller.state.value
+        assertEquals(TERM_START_EPOCH_DAY, state.termStartEpochDay)
+        assertEquals(3, state.currentWeek)
+        assertEquals(3, state.selectedWeek)
+        assertEquals(TERM_START_EPOCH_DAY, storage.termStart)
+    }
+
+    @Test fun theSelectedWeekIsClampedToTheTerm() = runTest {
+        val controller = controller(keyStorage = keyVault(FIXTURE_KEY))
+        controller.restore()
+        advanceUntilIdle()
+        controller.useImage(IMAGE)
+        advanceUntilIdle()
+        assertEquals(16, controller.state.value.weekCount)
+
+        controller.selectWeek(99)
+        assertEquals(16, controller.state.value.selectedWeek)
+        controller.selectWeek(0)
+        assertEquals(1, controller.state.value.selectedWeek)
+        controller.selectWeek(-5)
+        assertEquals(1, controller.state.value.selectedWeek)
+    }
+
+    @Test fun clearingTheTermStartForgetsTheCurrentWeek() = runTest {
+        val storage = MemoryTimetableStorage().also {
+            it.termStart = TERM_START_EPOCH_DAY
+            TimetableStore(it).save(TIMETABLE)
+        }
+        val controller = controller(storage = storage)
+        controller.restore()
+        advanceUntilIdle()
+        assertEquals(3, controller.state.value.currentWeek)
+
+        controller.clearTermStart()
+        advanceUntilIdle()
+
+        val state = controller.state.value
+        assertNull(state.termStartEpochDay)
+        assertEquals(1, state.currentWeek)
+        assertNull(storage.termStart)
+    }
+
+    @Test fun deletingTheTimetableKeepsTheTermStart() = runTest {
+        val storage = MemoryTimetableStorage().also { it.termStart = TERM_START_EPOCH_DAY }
+        val controller = controller(storage = storage, keyStorage = keyVault(FIXTURE_KEY))
+        controller.restore()
+        advanceUntilIdle()
+        controller.useImage(IMAGE)
+        advanceUntilIdle()
+        assertEquals(TIMETABLE, controller.state.value.timetable)
+        assertTrue(controller.state.value.canRetry)
+
+        controller.deleteTimetable()
+        advanceUntilIdle()
+
+        assertNull(controller.state.value.timetable)
+        assertEquals(TERM_START_EPOCH_DAY, controller.state.value.termStartEpochDay)
+    }
+
+    @Test fun aTimetableRestoredFromDiskStillOffersRetryAfterAnotherImage() = runTest {
+        val storage = MemoryTimetableStorage()
+        val controller = controller(storage = storage, keyStorage = keyVault("sk-fixture-abcdef"))
+        controller.restore()
+        advanceUntilIdle()
+        assertFalse(controller.state.value.canRetry)
+        controller.useImage(IMAGE)
+        advanceUntilIdle()
+        assertTrue(controller.state.value.canRetry)
+    }
+
     private companion object {
         val IMAGE = TimetableImage(ByteArray(32) { 1 }, "image/jpeg")
+        const val BUILT_IN_KEY = "sk-built-in-fixture"
+        const val FIXTURE_KEY = "sk-fixture-abcdef"
+        // 2026-10-06 is a Tuesday, two weeks after the term started on Monday 2026-09-21.
+        val TODAY: LocalDate = LocalDate.of(2026, 10, 6)
+        val TERM_START: LocalDate = LocalDate.of(2026, 9, 21)
+        val TERM_START_EPOCH_DAY: Long = TERM_START.toEpochDay()
         val TIMETABLE = Timetable(
             term = "2025-2026学年第一学期",
             courses = listOf(TimetableCourse("高等数学-fixture", "教师甲", "文理楼201", 1, 1, 2, 1, 16)),

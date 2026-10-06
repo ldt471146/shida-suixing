@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only the update download folder is exposed, and only to the system installer that is handed a
+     single content uri for the downloaded apk. -->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

@@ -114,11 +114,15 @@ object TimetableValidator {
             endPeriod = periods.last,
             startWeek = weeks.first,
             endWeek = weeks.last,
-            parity = parityOf(draft.startWeek, draft.endWeek)
+            parity = parityOf(draft.parity, draft.startWeek, draft.endWeek)
         )
     }
 
-    /** Two different courses cannot occupy the same weekday period; that means the read is wrong. */
+    /**
+     * Two different courses cannot occupy the same weekday period in the same week; that means the
+     * read is wrong. Two courses that never share a week — a 单周 subject and a 双周 subject sharing
+     * one slot, which is common on Chinese timetables — are not a conflict.
+     */
     private fun rejectConflicts(courses: List<TimetableCourse>) {
         for (index in courses.indices) {
             for (other in index + 1 until courses.size) {
@@ -126,7 +130,7 @@ object TimetableValidator {
                 val right = courses[other]
                 if (left.weekday != right.weekday || left.name == right.name) continue
                 val periodsOverlap = left.startPeriod <= right.endPeriod && right.startPeriod <= left.endPeriod
-                if (periodsOverlap) {
+                if (periodsOverlap && shareATeachingWeek(left, right)) {
                     throw TimetableException(
                         TimetableFailure.CONFLICT,
                         "识别结果里第 ${left.weekday} 天的课程时间冲突，请换一张更清晰的课表照片。"
@@ -134,6 +138,12 @@ object TimetableValidator {
                 }
             }
         }
+    }
+
+    private fun shareATeachingWeek(left: TimetableCourse, right: TimetableCourse): Boolean {
+        val first = maxOf(left.startWeek, right.startWeek)
+        val last = minOf(left.endWeek, right.endWeek)
+        return first <= last && (first..last).any { week -> left.runsInWeek(week) && right.runsInWeek(week) }
     }
 
     private fun normalizeText(value: String?, maxLength: Int): String {
@@ -167,12 +177,29 @@ object TimetableValidator {
         return minOf(startValue, endValue)..maxOf(startValue, endValue)
     }
 
-    private fun parityOf(start: String?, end: String?): WeekParity {
+    /**
+     * The explicit 单双周 field wins when the model sent one. Otherwise the markers are looked for in
+     * the week range itself, because 单周 / 双周 is usually printed inside it on a Chinese timetable.
+     */
+    private fun parityOf(explicit: String?, start: String?, end: String?): WeekParity {
+        declaredParity(explicit)?.let { return it }
         val text = start.orEmpty() + end.orEmpty()
         return when {
             text.any { it in ODD_MARKERS } -> WeekParity.ODD
             text.any { it in EVEN_MARKERS } -> WeekParity.EVEN
             else -> WeekParity.ALL
+        }
+    }
+
+    private fun declaredParity(value: String?): WeekParity? {
+        val text = value?.trim()?.lowercase().orEmpty()
+        if (text.isEmpty()) return null
+        return when {
+            text.contains("odd") || text.contains("single") || text.contains("单") || text.contains("奇") -> WeekParity.ODD
+            text.contains("even") || text.contains("double") || text.contains("双") || text.contains("偶") -> WeekParity.EVEN
+            text.contains("all") || text.contains("every") || text.contains("each") ||
+                text.contains("每") || text.contains("全") || text.contains("无") -> WeekParity.ALL
+            else -> null
         }
     }
 
@@ -198,6 +225,36 @@ object TimetableValidator {
     private val EVEN_MARKERS = "双偶".toCharArray()
 }
 
+/**
+ * Teaching-week arithmetic. The term's first Monday is set once by the user, and every "which week
+ * is it" question is answered from it — a guessed week number would silently show the wrong courses.
+ */
+object TimetableCalendar {
+
+    /** Monday-first weekday number (1 = 周一 … 7 = 周日) of [date]. */
+    fun weekdayOf(date: LocalDate): Int = date.dayOfWeek.value
+
+    /** The Monday of the week [date] falls in, as an epoch day — the shape the term start is stored in. */
+    fun mondayOfWeek(date: LocalDate): Long = date.minusDays((date.dayOfWeek.value - 1).toLong()).toEpochDay()
+
+    /**
+     * The 1-based teaching week [date] falls in. Dates before the term start are reported as week 1
+     * rather than a negative week, so a wrong term start can never produce a nonsensical label.
+     */
+    fun weekOf(date: LocalDate, termStartEpochDay: Long): Int {
+        val elapsedDays = date.toEpochDay() - termStartEpochDay
+        return (Math.floorDiv(elapsedDays, DAYS_PER_WEEK).toInt() + 1).coerceAtLeast(1)
+    }
+
+    /** The seven dates of teaching week [week], so the header can name the range it is showing. */
+    fun weekDates(termStartEpochDay: Long, week: Int): List<LocalDate> {
+        val monday = LocalDate.ofEpochDay(termStartEpochDay + (week - 1).toLong() * DAYS_PER_WEEK)
+        return (0 until DAYS_PER_WEEK.toInt()).map { monday.plusDays(it.toLong()) }
+    }
+
+    private const val DAYS_PER_WEEK = 7L
+}
+
 sealed interface TimetableBlock {
     val span: Int
 
@@ -216,19 +273,24 @@ data class TimetableGrid(val days: List<TimetableDay>, val periods: List<Int>)
 
 /**
  * Splits each weekday into consecutive blocks so a 第1-2节 course is drawn once, spanning two rows.
- * Overlaps are already refused by [TimetableValidator]; the first covering course wins here so the
- * grid stays total even for a hand-built instance.
+ * Overlaps in the same week are already refused by [TimetableValidator]; the first covering course
+ * wins here so the grid stays total even for a hand-built instance.
+ *
+ * [week] limits the grid to what is actually taught in that teaching week — a 单周 course is absent
+ * from an even week, and the grid is only as tall as that week needs. A null [week] shows every
+ * course at once, which is what the plain "整个学期" reading wants.
  */
 object TimetableGridLayout {
-    fun build(timetable: Timetable): TimetableGrid {
-        val periodCount = timetable.courses.maxOfOrNull { it.endPeriod }?.coerceIn(1, TIMETABLE_MAX_PERIODS) ?: 0
-        val lastWeekday = if (timetable.courses.any { it.weekday >= 6 }) 7 else 5
+    fun build(timetable: Timetable, week: Int? = null): TimetableGrid {
+        val courses = if (week == null) timetable.courses else timetable.courses.filter { it.runsInWeek(week) }
+        val periodCount = courses.maxOfOrNull { it.endPeriod }?.coerceIn(1, TIMETABLE_MAX_PERIODS) ?: 0
+        val lastWeekday = if (courses.any { it.weekday >= 6 }) 7 else 5
         val days = (1..lastWeekday).map { weekday ->
-            val courses = timetable.courses.filter { it.weekday == weekday }.sortedBy { it.startPeriod }
+            val coursesOfDay = courses.filter { it.weekday == weekday }.sortedBy { it.startPeriod }
             val blocks = mutableListOf<TimetableBlock>()
             var period = 1
             while (period <= periodCount) {
-                val course = courses.firstOrNull { it.startPeriod <= period && period <= it.endPeriod }
+                val course = coursesOfDay.firstOrNull { it.startPeriod <= period && period <= it.endPeriod }
                 if (course == null) {
                     blocks += TimetableBlock.Free(period)
                     period++
@@ -240,5 +302,30 @@ object TimetableGridLayout {
             TimetableDay(weekday, blocks)
         }
         return TimetableGrid(days, (1..periodCount).toList())
+    }
+}
+
+/**
+ * Picks a slot in the course-colour ladder for every course. A course keeps one slot everywhere it
+ * appears, and a course that would touch the course directly above it in the same column takes the
+ * next slot instead, so two neighbouring cells are never painted the same tint.
+ */
+object TimetableCourseSlots {
+    fun assign(courses: List<TimetableCourse>, slotCount: Int): Map<TimetableCourse, Int> {
+        if (slotCount <= 0 || courses.isEmpty()) return emptyMap()
+        // Sorting the names first keeps the ladder stable across recognitions of the same timetable.
+        val preferred = courses.map { it.name }.distinct().sorted()
+            .withIndex().associate { (index, name) -> name to index % slotCount }
+        val slots = LinkedHashMap<TimetableCourse, Int>()
+        courses.groupBy { it.weekday }.toSortedMap().forEach { (_, ofDay) ->
+            var previous = -1
+            ofDay.sortedBy { it.startPeriod }.forEach { course ->
+                val base = preferred[course.name] ?: 0
+                val slot = if (base == previous) (base + 1) % slotCount else base
+                slots[course] = slot
+                previous = slot
+            }
+        }
+        return slots
     }
 }

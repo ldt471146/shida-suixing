@@ -19,6 +19,7 @@ import androidx.compose.material.icons.outlined.MonitorHeart
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.PersonOutline
 import androidx.compose.material.icons.outlined.BrightnessAuto
+import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
@@ -40,6 +41,9 @@ import cn.gxnu.campus.core.ConnectionStatus
 import cn.gxnu.campus.ui.CampusActions
 import cn.gxnu.campus.ui.CampusUiState
 import cn.gxnu.campus.ui.ThemeMode
+import cn.gxnu.campus.ui.UpdateActions
+import cn.gxnu.campus.ui.UpdatePhase
+import cn.gxnu.campus.ui.UpdateUiState
 import cn.gxnu.campus.ui.common.AutoConnectRow
 import cn.gxnu.campus.ui.common.CampusCard
 import cn.gxnu.campus.ui.common.CampusPageHeader
@@ -49,13 +53,21 @@ import cn.gxnu.campus.ui.common.CampusRowDivider
 import cn.gxnu.campus.ui.common.ConnectionHelpDialog
 import cn.gxnu.campus.ui.common.DeleteAccountDialog
 import cn.gxnu.campus.ui.common.SectionLabel
+import cn.gxnu.campus.ui.common.UpdateNoticeCard
 import cn.gxnu.campus.ui.common.connectionStatusLabel
 import cn.gxnu.campus.ui.theme.CampusRadius
 import cn.gxnu.campus.ui.theme.CampusSpace
 import cn.gxnu.campus.ui.theme.LocalCampusPalette
 
 @Composable
-fun ProfileScreen(state: CampusUiState, actions: CampusActions, onAccount: () -> Unit, modifier: Modifier = Modifier) {
+fun ProfileScreen(
+    state: CampusUiState,
+    actions: CampusActions,
+    onAccount: () -> Unit,
+    updates: UpdateActions?,
+    updateState: UpdateUiState,
+    modifier: Modifier = Modifier
+) {
     val palette = LocalCampusPalette.current
     var showTheme by remember { mutableStateOf(false) }
     var showHelp by remember { mutableStateOf(false) }
@@ -106,6 +118,7 @@ fun ProfileScreen(state: CampusUiState, actions: CampusActions, onAccount: () ->
             )
         }
         item { SectionLabel("帮助与检查", Modifier.padding(start = CampusSpace.xs)) }
+        if (updates != null) item { UpdateNoticeCard(updateState, updates) }
         item {
             CampusCard {
                 CampusRow(
@@ -135,6 +148,18 @@ fun ProfileScreen(state: CampusUiState, actions: CampusActions, onAccount: () ->
                     leadingIcon = Icons.AutoMirrored.Outlined.OpenInNew,
                     onClick = actions::openOfficialPortal
                 )
+                if (updates != null) {
+                    CampusRowDivider()
+                    CampusRow(
+                        title = "检查更新",
+                        description = updateState.checkSummary ?: "当前版本 ${BuildConfig.VERSION_NAME}",
+                        leadingIcon = Icons.Outlined.SystemUpdate,
+                        trailingText = if (updateState.phase is UpdatePhase.Checking) "检查中…" else null,
+                        onClick = updates::checkForUpdate,
+                        enabled = updateState.phase !is UpdatePhase.Checking &&
+                            updateState.phase !is UpdatePhase.Downloading
+                    )
+                }
             }
         }
         if (state.accountConfigured) {

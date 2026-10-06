@@ -5,6 +5,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import cn.gxnu.campus.core.Timetable
+import cn.gxnu.campus.core.TimetableCalendar
 import cn.gxnu.campus.data.TimetableStore
 import cn.gxnu.campus.data.VisionApiKeyStore
 import cn.gxnu.campus.data.maskApiKey
@@ -13,6 +14,8 @@ import cn.gxnu.campus.network.TimetableImage
 import cn.gxnu.campus.network.TimetableVisionClient
 import cn.gxnu.campus.network.TimetableVisionException
 import cn.gxnu.campus.network.TimetableVisionFailure
+import cn.gxnu.campus.network.VisionBuiltInCredentials
+import java.time.LocalDate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -28,12 +31,24 @@ data class TimetableUiState(
     val restoring: Boolean = true,
     val recognizing: Boolean = false,
     val timetable: Timetable? = null,
+    /** True when this build carries its own endpoint and key, so the key screen is never shown. */
+    val builtInKey: Boolean = false,
     val keyConfigured: Boolean = false,
     val keyHint: String = "",
+    /** The week the grid is showing. */
+    val selectedWeek: Int = 1,
+    /** The week today falls in, or 1 while no term start has been set. */
+    val currentWeek: Int = 1,
+    val weekCount: Int = 1,
+    /** Epoch day of the term's first Monday; null until the user sets it. */
+    val termStartEpochDay: Long? = null,
+    /** 1 = 周一 … 7 = 周日. */
+    val todayWeekday: Int = 1,
+    /** True once an image has been picked, so 重新识别 has something to repeat. */
+    val canRetry: Boolean = false,
     val message: String? = null,
     val messageId: Long = 0,
-    val failure: TimetableVisionFailure? = null,
-    val canRetry: Boolean = false
+    val failure: TimetableVisionFailure? = null
 )
 
 interface TimetableActions {
@@ -43,38 +58,46 @@ interface TimetableActions {
     fun retry()
     fun deleteTimetable()
     fun clearMessage(expectedId: Long? = null)
+    fun selectWeek(week: Int)
+    fun showCurrentWeek()
+    fun setTermStart(epochDay: Long)
+    fun clearTermStart()
 }
 
 /**
  * Owns everything the timetable screen does that outlives one frame: the stored timetable, the
- * encrypted key, and the recognition request. The API key is read back from the vault for each
- * request instead of being cached in a field, so it is never held longer than the call needs it.
+ * encrypted key, the chosen teaching week and the recognition request. The API key is read back
+ * from the vault for each request instead of being cached in a field, so it is never held longer
+ * than the call needs it; a key compiled into the build is never stored at all.
  */
 class TimetableController internal constructor(
     private val client: TimetableVisionClient,
     private val store: TimetableStore,
     private val keys: VisionApiKeyStore,
     private val scope: CoroutineScope,
-    private val dispatcher: CoroutineDispatcher = Dispatchers.IO
+    private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val builtInKey: String = "",
+    private val today: () -> LocalDate = { LocalDate.now() }
 ) : TimetableActions {
 
-    private val mutableState = MutableStateFlow(TimetableUiState())
+    private val mutableState = MutableStateFlow(TimetableUiState(builtInKey = builtInKey.isNotBlank()))
     val state: StateFlow<TimetableUiState> = mutableState.asStateFlow()
 
     private var pendingImage: TimetableImage? = null
     private var messageId = 0L
 
-    /** Reads the saved timetable and key hint; the empty state is a normal, expected outcome. */
+    /** Reads the saved timetable, term start and key hint; the empty state is a normal outcome. */
     fun restore() {
         scope.launch {
             val restored = withContext(dispatcher) { restoreFromDisk() }
-            mutableState.value = mutableState.value.copy(
+            mutableState.value = mutableState.value.withTimetable(restored.timetable, restored.termStart).copy(
                 restoring = false,
-                timetable = restored.timetable,
                 keyConfigured = restored.key != null,
                 keyHint = maskApiKey(restored.key),
-                message = if (restored.keyUnreadable) "已保存的 API Key 无法解密，请重新填写。" else mutableState.value.message,
-                messageId = if (restored.keyUnreadable) ++messageId else mutableState.value.messageId
+                // A build with its own key has no key screen, so a vault problem is not the user's.
+                message = if (restored.keyUnreadable && builtInKey.isBlank()) "已保存的 API Key 无法解密，请重新填写。"
+                else mutableState.value.message,
+                messageId = if (restored.keyUnreadable && builtInKey.isBlank()) ++messageId else mutableState.value.messageId
             )
         }
     }
@@ -84,7 +107,7 @@ class TimetableController internal constructor(
         var unreadable = false
         // load() returns null when nothing is stored and throws only when the vault itself failed.
         try { key = keys.load() } catch (_: Exception) { unreadable = true }
-        return Restored(store.load(), key, unreadable)
+        return Restored(store.load(), key, unreadable, store.loadTermStart())
     }
 
     override fun useImage(image: TimetableImage) {
@@ -100,6 +123,51 @@ class TimetableController internal constructor(
             return
         }
         recognize(image)
+    }
+
+    override fun selectWeek(week: Int) {
+        val current = mutableState.value
+        mutableState.value = current.copy(selectedWeek = week.coerceIn(1, current.weekCount.coerceAtLeast(1)))
+    }
+
+    override fun showCurrentWeek() {
+        mutableState.value = mutableState.value.copy(selectedWeek = mutableState.value.currentWeek)
+    }
+
+    override fun setTermStart(epochDay: Long) {
+        scope.launch {
+            val saved = withContext(dispatcher) {
+                try { store.saveTermStart(epochDay); true } catch (_: Exception) { false }
+            }
+            if (!saved) {
+                publish("开学日期未能保存，请重试。")
+                return@launch
+            }
+            // Setting the date is a request to be taken to the current week, so jump there.
+            val current = mutableState.value
+            val week = TimetableCalendar.weekOf(today(), epochDay).coerceIn(1, current.weekCount.coerceAtLeast(1))
+            mutableState.value = current.copy(
+                termStartEpochDay = epochDay,
+                currentWeek = week,
+                selectedWeek = week,
+                message = "开学日期已保存，当前周按第 $week 周显示。",
+                messageId = ++messageId
+            )
+        }
+    }
+
+    override fun clearTermStart() {
+        scope.launch {
+            val cleared = withContext(dispatcher) {
+                try { store.clearTermStart(); true } catch (_: Exception) { false }
+            }
+            mutableState.value = mutableState.value.copy(
+                termStartEpochDay = if (cleared) null else mutableState.value.termStartEpochDay,
+                currentWeek = if (cleared) 1 else mutableState.value.currentWeek,
+                message = if (cleared) "已清除开学日期。" else "开学日期未能清除，请重试。",
+                messageId = ++messageId
+            )
+        }
     }
 
     override fun saveApiKey(value: String) {
@@ -144,8 +212,10 @@ class TimetableController internal constructor(
             val cleared = withContext(dispatcher) {
                 try { store.clear(); true } catch (_: Exception) { false }
             }
-            mutableState.value = mutableState.value.copy(
-                timetable = if (cleared) null else mutableState.value.timetable,
+            // The term start is kept: it belongs to the term, not to the recognition that just went.
+            val current = mutableState.value
+            val kept = if (cleared) null else current.timetable
+            mutableState.value = current.withTimetable(kept, current.termStartEpochDay).copy(
                 failure = null,
                 message = if (cleared) "本机课表已删除。" else "课表未能删除，请重试。",
                 messageId = ++messageId
@@ -165,10 +235,8 @@ class TimetableController internal constructor(
             val outcome = withContext(dispatcher) { attempt(image) }
             val current = mutableState.value
             mutableState.value = when (outcome) {
-                is Outcome.Recognized -> current.copy(
+                is Outcome.Recognized -> current.withTimetable(outcome.timetable, current.termStartEpochDay).copy(
                     recognizing = false,
-                    // A refused request keeps the timetable that is already stored.
-                    timetable = outcome.timetable,
                     failure = null,
                     message = if (outcome.persisted) "课表已识别并保存在本机。"
                     else "课表已识别，但未能保存到本机，本次结果重开后会丢失。",
@@ -185,7 +253,7 @@ class TimetableController internal constructor(
     }
 
     private suspend fun attempt(image: TimetableImage): Outcome {
-        val key = try { keys.load() } catch (_: Exception) { null }
+        val key = resolvedApiKey()
         if (key.isNullOrBlank()) return Outcome.Refused(TimetableVisionFailure.MISSING_KEY, "请先填写 API Key，再识别课表。")
         val timetable = try {
             client.recognize(image, key)
@@ -200,8 +268,33 @@ class TimetableController internal constructor(
         return Outcome.Recognized(timetable, persisted)
     }
 
+    /** The build's own key wins; the encrypted vault is only consulted when the build has none. */
+    private suspend fun resolvedApiKey(): String? {
+        if (builtInKey.isNotBlank()) return builtInKey
+        return try { keys.load()?.takeIf { it.isNotBlank() } } catch (_: Exception) { null }
+    }
+
     private fun publish(message: String) {
         mutableState.value = mutableState.value.copy(message = message, messageId = ++messageId)
+    }
+
+    /**
+     * Recomputes everything that follows from the timetable and the term start, so the week switcher
+     * and 当前周 can never drift apart from the courses being shown.
+     */
+    private fun TimetableUiState.withTimetable(timetable: Timetable?, termStart: Long?): TimetableUiState {
+        val weekCount = timetable?.weekCount ?: 1
+        val current = termStart?.let { TimetableCalendar.weekOf(today(), it) }?.coerceIn(1, weekCount) ?: 1
+        val selected = if (timetable == null) 1 else selectedWeek.coerceIn(1, weekCount)
+        return copy(
+            timetable = timetable,
+            weekCount = weekCount,
+            currentWeek = current,
+            termStartEpochDay = termStart,
+            // A fresh timetable opens on the current week; an unchanged one keeps the browsed week.
+            selectedWeek = if (timetable != this.timetable) current else selected,
+            todayWeekday = TimetableCalendar.weekdayOf(today())
+        )
     }
 
     private sealed interface Outcome {
@@ -209,7 +302,12 @@ class TimetableController internal constructor(
         data class Refused(val failure: TimetableVisionFailure?, val message: String) : Outcome
     }
 
-    private data class Restored(val timetable: Timetable?, val key: String?, val keyUnreadable: Boolean)
+    private data class Restored(
+        val timetable: Timetable?,
+        val key: String?,
+        val keyUnreadable: Boolean,
+        val termStart: Long?
+    )
 }
 
 /**
@@ -219,12 +317,15 @@ class TimetableController internal constructor(
 @Composable
 fun rememberTimetableController(): TimetableController {
     val context = LocalContext.current
+    val builtIn = remember { VisionBuiltInCredentials }
     val controller = remember(context) {
         TimetableController(
-            client = HttpTimetableVisionClient(),
+            // The endpoint's base url is only meaningful when the build actually carries a key.
+            client = HttpTimetableVisionClient(baseUrl = builtIn.baseUrl),
             store = TimetableStore(context),
             keys = VisionApiKeyStore(context),
-            scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+            builtInKey = builtIn.apiKey
         )
     }
     LaunchedEffect(controller) { controller.restore() }

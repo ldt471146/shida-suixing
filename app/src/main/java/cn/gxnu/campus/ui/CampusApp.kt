@@ -81,7 +81,12 @@ private enum class Destination(val title: String, val icon: ImageVector) {
 }
 
 @Composable
-fun CampusApp(state: CampusUiState, actions: CampusActions) {
+fun CampusApp(
+    state: CampusUiState,
+    actions: CampusActions,
+    updates: UpdateActions? = null,
+    updateState: UpdateUiState = UpdateUiState()
+) {
     CampusTheme(state.theme) {
         var destinationName by rememberSaveable {
             mutableStateOf(Destination.HOME.name)
@@ -119,6 +124,14 @@ fun CampusApp(state: CampusUiState, actions: CampusActions) {
                 currentActions.clearFeedback(eventId)
             }
         }
+        LaunchedEffect(updateState.messageId) {
+            val message = updateState.message
+            val eventId = updateState.messageId
+            if (!message.isNullOrBlank()) {
+                snackbar.showSnackbar(message, duration = SnackbarDuration.Short, withDismissAction = true)
+                updates?.clearUpdateMessage(eventId)
+            }
+        }
         BackHandler(enabled = destination != Destination.HOME && !showProvider) {
             if (!state.accountSaving) {
                 destinationName = when (destination) {
@@ -152,7 +165,9 @@ fun CampusApp(state: CampusUiState, actions: CampusActions) {
                     }
                     val screenModifier = Modifier.fillMaxWidth().weight(1f)
                     when (destination) {
-                        Destination.HOME -> HomeScreen(state, actions, ::openAccount, { showProvider = true }, screenModifier)
+                        Destination.HOME -> HomeScreen(
+                            state, actions, ::openAccount, { showProvider = true }, updates, updateState, screenModifier
+                        )
                         Destination.SERVICES -> ServicesScreen(
                             state,
                             onCampusNetwork = { destinationName = Destination.HOME.name },
@@ -160,7 +175,9 @@ fun CampusApp(state: CampusUiState, actions: CampusActions) {
                             modifier = screenModifier
                         )
                         Destination.TIMETABLE -> TimetableScreen(timetableState, timetable, screenModifier)
-                        Destination.PROFILE -> ProfileScreen(state, actions, ::openAccount, screenModifier)
+                        Destination.PROFILE -> ProfileScreen(
+                            state, actions, ::openAccount, updates, updateState, screenModifier
+                        )
                         Destination.ACCOUNT -> AccountScreen(
                             state, actions,
                             onBack = { destinationName = accountReturnName },

@@ -26,6 +26,8 @@ import cn.gxnu.campus.core.ConnectionStatus
 import cn.gxnu.campus.core.PortalFailure
 import cn.gxnu.campus.ui.CampusActions
 import cn.gxnu.campus.ui.CampusUiState
+import cn.gxnu.campus.ui.UpdateActions
+import cn.gxnu.campus.ui.UpdateUiState
 import cn.gxnu.campus.ui.common.AutoConnectRow
 import cn.gxnu.campus.ui.common.CampusCard
 import cn.gxnu.campus.ui.common.CampusGhostButton
@@ -38,6 +40,7 @@ import cn.gxnu.campus.ui.common.CampusRowDivider
 import cn.gxnu.campus.ui.common.ConnectionFeedback
 import cn.gxnu.campus.ui.common.ConnectionHelpDialog
 import cn.gxnu.campus.ui.common.OfficialPortalLink
+import cn.gxnu.campus.ui.common.UpdateNoticeCard
 import cn.gxnu.campus.ui.common.isConnecting
 import cn.gxnu.campus.ui.theme.CampusSpace
 
@@ -47,6 +50,8 @@ fun HomeScreen(
     actions: CampusActions,
     onAccount: () -> Unit,
     onProvider: () -> Unit,
+    updates: UpdateActions?,
+    updateState: UpdateUiState,
     modifier: Modifier = Modifier
 ) {
     var showHelp by remember { mutableStateOf(false) }
@@ -79,6 +84,9 @@ fun HomeScreen(
             }
         }
         item { CampusCard { AutoConnectRow(state, actions::setAutoConnect) } }
+        // Last on the page on purpose: an available update is worth knowing about, but it never
+        // pushes the connection the user came here for off the first screen.
+        if (updates != null) item { UpdateNoticeCard(updateState, updates) }
     }
     if (showHelp) ConnectionHelpDialog(actions, onDismiss = { showHelp = false })
 }

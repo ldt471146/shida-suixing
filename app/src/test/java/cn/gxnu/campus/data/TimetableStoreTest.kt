@@ -14,10 +14,14 @@ class TimetableStoreTest {
 
     private class MemoryStorage : TimetableStorage {
         var value: String? = null
+        var termStart: Long? = null
         var failure: Exception? = null
         override fun read(): String? = failure?.let { throw it } ?: value
         override fun write(value: String) { failure?.let { throw it }; this.value = value }
         override fun remove() { failure?.let { throw it }; value = null }
+        override fun readTermStart(): Long? = failure?.let { throw it } ?: termStart
+        override fun writeTermStart(epochDay: Long) { failure?.let { throw it }; termStart = epochDay }
+        override fun removeTermStart() { failure?.let { throw it }; termStart = null }
     }
 
     private fun course(
@@ -94,5 +98,68 @@ class TimetableStoreTest {
 
     @Test fun aFailedReadDoesNotThrowAtTheCaller() {
         assertNull(TimetableStore(MemoryStorage().apply { failure = IllegalStateException("fixture unreadable") }).load())
+    }
+
+    @Test fun twoCoursesThatAlternateWeeksSurviveAReload() {
+        // 单周 and 双周 subjects sharing one slot are legal; losing the parity on reload would
+        // turn them into a conflict and silently throw the whole timetable away.
+        val storage = MemoryStorage()
+        TimetableStore(storage).save(timetable(
+            course(name = "单周课-fixture", parity = WeekParity.ODD),
+            course(name = "双周课-fixture", parity = WeekParity.EVEN)
+        ))
+        val loaded = requireNotNull(TimetableStore(storage).load())
+        assertEquals(2, loaded.courseCount)
+        assertEquals(WeekParity.ODD, loaded.courses.first { it.name == "单周课-fixture" }.parity)
+        assertEquals(WeekParity.EVEN, loaded.courses.first { it.name == "双周课-fixture" }.parity)
+    }
+
+    @Test fun theTermStartSurvivesARestart() {
+        val storage = MemoryStorage()
+        val monday = java.time.LocalDate.of(2026, 9, 21).toEpochDay()
+        TimetableStore(storage).saveTermStart(monday)
+        assertEquals(monday, TimetableStore(storage).loadTermStart())
+    }
+
+    @Test fun anUnsetTermStartReadsAsNull() {
+        assertNull(TimetableStore(MemoryStorage()).loadTermStart())
+    }
+
+    @Test fun theTermStartCanBeCleared() {
+        val storage = MemoryStorage()
+        val store = TimetableStore(storage)
+        store.saveTermStart(20_000L)
+        store.clearTermStart()
+        assertNull(store.loadTermStart())
+        assertNull(storage.termStart)
+    }
+
+    @Test fun aTermStartOutsideTheSaneRangeIsRefused() {
+        val store = TimetableStore(MemoryStorage())
+        for (absurd in listOf(-1L, Long.MIN_VALUE, 47_483L, Long.MAX_VALUE)) {
+            val failure = try {
+                store.saveTermStart(absurd)
+                throw AssertionError("expected $absurd to be refused")
+            } catch (failure: TimetableStorageException) {
+                failure
+            }
+            assertFalse(failure.message.isNullOrBlank())
+        }
+    }
+
+    @Test fun aCorruptedTermStartReadsAsUnset() {
+        val storage = MemoryStorage().apply { termStart = 999_999_999L }
+        assertNull(TimetableStore(storage).loadTermStart())
+    }
+
+    @Test fun deletingTheTimetableKeepsTheTermStart() {
+        val storage = MemoryStorage()
+        val store = TimetableStore(storage)
+        store.save(timetable(course()))
+        store.saveTermStart(20_000L)
+        store.clear()
+        assertNull(store.load())
+        // The date belongs to the term, not to the recognition that just went.
+        assertEquals(20_000L, store.loadTermStart())
     }
 }

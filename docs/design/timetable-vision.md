@@ -2,24 +2,28 @@
 
 2026-10-06 新增。用户上传课表图片，由视觉大模型识别成结构化课程，再在本机渲染成周课表。
 
-## 为什么可以直接用 DeepSeek
+## 端点与模型
 
-DeepSeek 的 `deepseek-flash` 本身支持图片输入，不需要另外接一个视觉模型：[图像理解文档](https://api-docs.deepseek.com/zh-cn/guides/vision/) 说明历史模型名 `deepseek-v4-flash-vision-exp` 已下线，其请求同样由最新的 Flash 模型承接。接口是标准 OpenAI 兼容格式，`content` 为块数组而非字符串。
+0.4.0 起识别端点内置进构建，正常使用无需填 Key。默认走 `https://ai.123312.xyz/v1` 上的 `deepseek-v4.1-flash`，`reasoning_effort: "high"`、`temperature: 0`、`response_format: json_object`。
+
+端点与 Key 由 `local.properties` 的 `vision.baseUrl` / `vision.apiKey` 在构建时注入 `BuildConfig`，`local.properties` 已被忽略，因此版本库里没有 Key。课表页的高级设置可以覆盖端点、模型或填自己的 Key。
+
+这是一个明确的取舍：**Key 打进 APK 意味着任何拿到 APK 的人都能提取并盗刷额度**。当前是自用分发，接受这一点；若要公开分发，应改为用户自带 Key 或走服务端转发。用户自带 Key 的路径仍然保留，用 Android Keystore AES/GCM 加密存在本机，使用独立别名。
 
 ## 请求契约
 
 ```
-POST https://api.deepseek.com/chat/completions
-Authorization: Bearer <用户填写的 Key>
+POST {vision.baseUrl}/chat/completions
+Authorization: Bearer <BuildConfig.VISION_API_KEY 或用户填写的 Key>
 Content-Type: application/json
 
-{"model":"deepseek-flash",
+{"model":"deepseek-v4.1-flash",
  "messages":[{"role":"system","content":"<纯文本规则 + JSON 示例>"},
              {"role":"user","content":[{"type":"text","text":"请识别这张课表图片…"},
                                        {"type":"image_url",
                                         "image_url":{"url":"data:image/jpeg;base64,…","detail":"high"}}]}],
  "response_format":{"type":"json_object"},
- "temperature":0,"max_tokens":4096,"stream":false}
+ "temperature":0,"max_tokens":8192,"stream":false}
 ```
 
 约束与实现要点：
@@ -42,11 +46,15 @@ Content-Type: application/json
 
 解析层容忍代码块围栏、字段别名（`day`、`course_name`、`instructor`、`classroom`、`start_section`…）与中文写法（`星期三`、`第1-2节`、`1-16周(单)`）。校验层会拒绝越界字段、折叠重复行，并把同一时段不同课程的冲突单独报出。`is_timetable:false` 或课程列表为空时，界面明说没识别到课表且不保存任何内容，模型返回的自由文本原因不会展示给用户。
 
+**单双周是一个独立字段**（`parity`：`ALL` / `ODD` / `EVEN`），不是靠周次范围推断的。同一时段一门单周课加一门双周课是合法课表，不算冲突；只有共用同一奇偶性的重叠才算冲突。
+
+渲染分三层：今日课程列表、按周查看的课表网格、点开单门课看教师与地点。「按周查看」需要开学日期才能算当前周，未设置时按第 1 周显示并提示设置；设置后卡片显示当前周与对应日期区间。
+
 图片在进入请求前会先解码边界、按 2 的幂次采样、缩放到长边 2048 再按质量阶梯压成 JPEG，因此不会触到单图 32 MiB / 8192 px 的上限。
 
 ## API Key
 
-Key 由用户在课表页自行填写，用 AES/GCM 加密后存在本机，密钥由 Android Keystore 持有，使用独立的 Keystore 别名，删除其中一个密钥不会让另一个失效。Key 不写进源码、不打进 APK、不落日志，每次请求按需解密而不是长期缓存。这是刻意的取舍：把 Key 打包进 APK 意味着任何人反编译就能拿走并盗刷额度。
+内置端点的 Key 在构建时注入 `BuildConfig`（见上）。用户自带 Key 时用 AES/GCM 加密后存在本机，密钥由 Android Keystore 持有，使用独立的 Keystore 别名，删除其中一个不会让另一个失效；不落日志，每次请求按需解密而不是长期缓存。
 
 ## 失败处理
 
@@ -54,11 +62,12 @@ Key 由用户在课表页自行填写，用 AES/GCM 加密后存在本机，密�
 
 ## 验证状态
 
-代码、契约与失败路径由 71 项单元测试覆盖（模型与校验 16、识图客户端 14、响应解析 11、持久化 8、Key 保险库 6、控制器 13、图片处理 3），HTTP 层全部是假的。写这些测试时发现并修掉了三个自身缺陷：星期别名返回了内层下标、重复行未折叠、时段冲突被误报成字段非法。
+代码、契约与失败路径由 104 项课表单元测试覆盖（模型与校验、识图客户端、响应解析、持久化、Key 保险库、控制器、图片处理），HTTP 层全部是假的。写这些测试时发现并修掉了三个自身缺陷：星期别名返回了内层下标（`星期三`→2、`sunday`→8）、重复行未折叠、时段冲突被误报成字段非法；单双周最初被静默丢弃，补上 `parity` 字段后才正确。
+
+**已端到端验证**（2026-10-06，模拟器 + 真实接口）：用一张合成的中文课表图片（含 13 门课、单双周标注、合并单元格）走完整流程 —— 选图、上传、识别、渲染、落盘、重装后重新读取。结果 12 门课程全部识别，教师与教室正确（`大学英语 / Sarah Chen / 外语楼205`、`高等数学 / 李国强 / 文理楼301`、`毛泽东思想和中国特色社会主义理论 / 黄凯 / 文科楼202`）。周次筛选经核对正确：双周限定的课在第 1 周不出现，`9-16周` 的课在第 1 周不出现。
 
 **未验证的部分**（不要当成已验证）：
 
-- **没有用真实 Key 调过接口**。wire format 是按官方文档写并对假 HTTP 层断言的，没有跑过真实的请求/响应往返。识别效果本身取决于模型，需要用户拿真实课表图试。
-- `thinking` 与 `temperature` 两个字段取自文档，未实测；若线上拒绝，删掉 `HttpTimetableVisionClient.requestBody` 里的 `add("thinking", …)` 即可。
-- 未在真机上确认渲染效果：网格布局数学有单测，但画面本身没在设备上比对过。
-- 拍照入口仅在 API 29+ 提供，且只编译通过未实拍；相册选择是主路径，无需权限。
+- 拍照入口仅在 API 29+ 提供，只编译通过，未实拍；相册选择是主路径，无需权限。
+- 模型识别准确率取决于图片质量与模型本身，一张图通过不代表所有课表都能读对。界面已写明「看不清的内容不会凭空补全」。
+- 极窄屏幕（< 360dp）与超大字体的网格排版未逐一比对。

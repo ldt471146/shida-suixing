@@ -25,7 +25,35 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\preview-android.ps
 
 预览脚本检测指定设备，自动启动模拟器窗口并用 `adb install -r` 更新，保存的设置随更新保留。可用 `-State ONLINE`、`AUTH_ERROR`、`NO_WIFI` 等查看不同界面。`-Preview` 仅在 Debug APK 生效，使用独立内存控制器，不初始化凭据存储或校园认证模块；界面始终显示预览标识。
 
-APK 输出：`app/build/outputs/apk/debug/app-debug.apk`，本轮版本 0.3.0 / versionCode 6，可覆盖安装。交付副本在检查通过后更新为 `D:\gxsf-delivery\师大随行-0.3.0.apk`。实体手机安装此 APK 后按应用内步骤设置。模拟器使用虚拟 Wi-Fi，可检查真实页面与本地保存，学校 Wi-Fi 的实际认证和后台行为需在实体 Android 手机验证。
+APK 输出：`app/build/outputs/apk/release/app-release.apk`，本轮版本 0.4.0 / versionCode 7，可覆盖安装。正式分发改走 GitHub Releases，见下节。
+
+## 更新与分发
+
+0.4.0 起不再手动传安装包：应用启动时检查 GitHub Releases，发现新版本后在首页和「我的」显示更新卡片，一键下载并在系统确认后安装。「我的 → 检查更新」可随时手动检查。自动检查每个进程只跑一次，请求量在未认证限额内。
+
+Android 不允许应用静默安装自己，所以流程止于「下载完成后由系统弹出安装确认」，这一步无法省略。
+
+发布新版本：
+
+```powershell
+git tag v0.4.1
+git push origin v0.4.1
+```
+
+推送 `v*` 标签后 [发布工作流](.github/workflows/android-release.yml) 在 runner 上构建签名 APK，并发布 `shida-suixing-<版本>.apk` 与 `version.json`。应用读取 `version.json` 的 `versionCode` 判断是否需要更新。
+
+签名密钥在仓库之外（`D:\gxsf-signing\release.jks`），通过仓库 Secrets 提供给 CI，不进入版本库。**请另行备份该密钥和口令**：丢失后已安装的旧版本无法再被覆盖更新。
+
+## 课表
+
+「服务 → 课表」选择或拍摄课表照片，AI 识图后生成周课表：
+
+- 按周查看，设置开学日期后自动定位当前周；未设置时按第 1 周显示
+- 单双周、上课周次范围都会参与筛选，互斥的课程不会同时出现
+- 周课表网格按课程着色，周末与空节自动收起，点任意课程查看教师与地点
+- 识别结果只存在本机，可重新识别或删除
+
+识别端点已内置进构建，正常使用无需填写 Key。Key 通过 `local.properties` 的 `vision.baseUrl` / `vision.apiKey` 在构建时注入，`local.properties` 已被忽略。见[课表识别](docs/design/timetable-vision.md)。
 
 ## 在手机使用
 
@@ -46,12 +74,15 @@ APK 输出：`app/build/outputs/apk/debug/app-debug.apk`，本轮版本 0.3.0 / 
 powershell -NoProfile -File .\scripts\check-android.ps1 -Task testDebugUnitTest
 powershell -NoProfile -File .\scripts\check-android.ps1 -Task assembleDebug
 powershell -NoProfile -File .\scripts\check-android.ps1 -Task lintDebug
+powershell -NoProfile -File .\scripts\check-android.ps1 -Task assembleRelease
 ```
+
+当前 285 个单元测试通过，`lintDebug` 无错误。发布构建需要 `local.properties` 里的 `signing.*`；缺失时回退到 debug 签名，产物不可分发。CI 的签名材料来自仓库 Secrets。
 
 协议和协调器测试使用虚构数据，覆盖运营商、编码、JSONP 数据解析、重复操作、换网与账号变更、失败状态。账号密码不进入日志或源码，界面不拼接带凭据的 URL。官方适配器通过 `Network.openConnection` 绑定目标 Wi-Fi，保留系统 TLS 证书校验。
 
-0.3.0 重做视觉：软灰画布 + 白色浮起卡片、单一蓝色主操作、1px 描边分隔、8/12/16 圆角阶梯、文字三级层次，底部导航保留手机手感；浅色与深色两套配色齐备，深色为炭灰画布而非纯黑。设置行式列表用描边图标配柔和底板，状态以小胶囊呈现。新版界面见[界面说明](docs/design/ui-v5-notes.md)，旧版记录见[调整说明](docs/design/ui-v4-notes.md)，字体来源和许可见[字体记录](docs/design/fonts/README.md)。Mobbin 与 Uiverse 的参考和后续路线见[校园 App 设计](docs/campus-app-design.md)。完整需求：[校园网规格](docs/comet/changes/gxnu-campus-connect/specs/campus-network/spec.md)、[应用外壳规格](docs/comet/changes/gxnu-campus-connect/specs/campus-shell/spec.md)。静态草案和 App 实际截图各自标注来源。
+0.4.0 重做视觉：软灰画布 + 白色浮起卡片、单一蓝色主操作、1px 描边分隔、8/12/16 圆角阶梯、文字三级层次，底部导航保留手机手感；浅色与深色两套配色齐备，深色为炭灰画布而非纯黑。设置行式列表用描边图标配柔和底板，状态以小胶囊呈现。新版界面见[界面说明](docs/design/ui-v5-notes.md)，旧版记录见[调整说明](docs/design/ui-v4-notes.md)，字体来源和许可见[字体记录](docs/design/fonts/README.md)。Mobbin 与 Uiverse 的参考和后续路线见[校园 App 设计](docs/campus-app-design.md)。完整需求：[校园网规格](docs/comet/changes/gxnu-campus-connect/specs/campus-network/spec.md)、[应用外壳规格](docs/comet/changes/gxnu-campus-connect/specs/campus-shell/spec.md)。静态草案和 App 实际截图各自标注来源。
 
-课表服务在「服务」页进入：选择或拍摄课表照片后交给 DeepSeek `deepseek-flash` 识图，返回结构化课程并渲染成周课表，识别结果保存在本机。API Key 由用户在课表页填写，用 Android Keystore 加密保存在本机，不写进源码也不打进 APK；只有课表图片会发往识别服务，校园网账号密码不参与。见[课表识别](docs/design/timetable-vision.md)。识别结果依赖模型输出，未用真实 Key 端到端验证过。
+课表识别走内置端点，默认模型 `deepseek-v4.1-flash`，可在课表页的高级设置里改端点、模型或填自己的 Key。只有课表图片会发往识别服务，校园网账号密码不参与。识别结果依赖模型输出；已在模拟器上用真实图片端到端验证过（12 门课程，含单双周与周次范围），正确性以实际课表为准。
 
-新版实际画面及操作记录：[模拟器检查](docs/design/emulator-verification.md)、[当前浅色首页](docs/design/screenshots/v5-home-light.png)。真实校园网登录与手机后台重连尚未完成实测，预览结果仅用于界面检查。
+新版实际画面及操作记录：[模拟器检查](docs/design/emulator-verification.md)、[当前浅色首页](docs/design/screenshots/v5-home-light.png)。更新链路的实现与边界见[应用内更新](docs/design/app-update.md)，课表识别见[课表识别](docs/design/timetable-vision.md)。真实校园网登录与手机后台重连尚未完成实测，预览结果仅用于界面检查。课表识别已在模拟器上用真实课表图片跑通（12 门课程），更新流程的下载与系统安装确认需在实体手机验证。
