@@ -1,0 +1,17 @@
+# Normalise line endings on checkout so the Gradle wrapper stays executable on Linux CI.
+# Without this, a Windows clone with core.autocrlf=true rewrites gradlew to CRLF and the
+# GitHub runner fails with "/usr/bin/env sh^M: bad interpreter".
+* text=auto
+gradlew text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets must never be line-ending converted.
+*.png binary
+*.webp binary
+*.ttf binary
+*.jar binary
+*.jks binary
+*.keystore binary
+*.apk binary
