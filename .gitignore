@@ -1,0 +1,19 @@
+# >>> Comet managed project state >>>
+!/.comet/
+/.comet/*
+!/.comet/config.yaml
+# <<< Comet managed project state <<<
+
+# Android / Gradle local artifacts
+/.gradle/
+/.kotlin/
+/.local/
+/.superpowers/
+**/build/
+/local.properties
+/.idea/
+*.iml
+*.apk
+*.aab
+*.keystore
+*.jks
