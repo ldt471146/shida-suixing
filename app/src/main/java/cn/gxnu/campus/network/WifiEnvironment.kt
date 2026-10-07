@@ -133,8 +133,10 @@ class WifiEnvironment(context: Context, private val scope: CoroutineScope) {
 
     fun openConnection(snapshot: NetworkSnapshot, url: URL): HttpsURLConnection {
         val entry = networks.entryFor(snapshot)
-        if (!hasNetworkPermissions(context) || !isLocationEnabled(context) ||
-            entry == null || !snapshot.isCampus) {
+        // Bound by identity, not by name: the network we are authenticating on is the one the caller
+        // handed us, and requiring the SSID to read "GXNU-YC" would break every renamed campus Wi-Fi
+        // and every device that cannot read names at all.
+        if (!hasNetworkPermissions(context) || !isLocationEnabled(context) || entry == null) {
             throw TargetNetworkUnavailableException()
         }
         // Never use URL.openConnection or bindProcessToNetwork: mobile data cannot satisfy this request.
@@ -219,8 +221,10 @@ class WifiEnvironment(context: Context, private val scope: CoroutineScope) {
     }.toSet()
 
     private fun publish() {
+        // Prefer the network whose name reads as the campus one, but fall back to any Wi-Fi: when no
+        // name can be read, the only honest snapshot is the Wi-Fi we are actually on.
         val network = networks.snapshots().sortedBy { it.id }.let { snapshots ->
-            snapshots.firstOrNull { it.isCampus } ?: snapshots.firstOrNull()
+            snapshots.firstOrNull { it.isNamedCampus } ?: snapshots.firstOrNull()
         }
         _state.value = wifiEnvironmentState(network, hasNetworkPermissions(context) && isLocationEnabled(context))
     }

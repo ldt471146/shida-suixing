@@ -10,13 +10,16 @@ import org.junit.Test
 
 /**
  * The embedded page is the only part of the app that types the user's real school credentials into
- * the school's own form, so it may open only while the runtime is settled on the campus Wi-Fi and on
- * a saved account with a chosen provider. Every refusal is pinned here, because a page opened on
- * another Wi-Fi or with an account the runtime is not settled on carries that login off the network.
+ * the school's own form, so it may open only while the runtime is settled on a Wi-Fi and on a saved
+ * account with a chosen provider. Every refusal is pinned here, because a page opened on a network
+ * the runtime is not settled on carries that login off it.
+ *
+ * The Wi-Fi's **name** is deliberately not one of the gates. See [aWifiWithNoReadableNameStillOpensThePage].
  */
 class EmbeddedPortalAvailabilityTest {
     private val campus = NetworkSnapshot(id = "wifi-1", ssid = "GXNU-YC", isWifi = true)
     private val home = NetworkSnapshot(id = "wifi-2", ssid = "Home-WiFi", isWifi = true)
+    private val unnamed = NetworkSnapshot(id = "wifi-3", ssid = "未识别 Wi-Fi", isWifi = true)
     private val account = Credentials("20230001", "secret")
 
     @Test
@@ -27,9 +30,20 @@ class EmbeddedPortalAvailabilityTest {
         assertEquals(Provider.CAMPUS, resolved?.provider)
     }
 
+    /**
+     * 用户报的故障就在这里：手机连在校园网上、账号也配好了，但名字没读出来（Android 缺定位权限
+     * 时会把名字抹成占位符），页面于是打不开、认证也发不出去。名字读不出来只说明「不知道」。
+     */
     @Test
-    fun anotherWifiNeverOpensThePage() {
-        assertNull(target(network = home))
+    fun aWifiWithNoReadableNameStillOpensThePage() {
+        assertEquals(unnamed, target(network = unnamed)?.network)
+    }
+
+    /** 这不是校园网：手机网络、以太网、以及名字读得出但不是校园网的 Wi-Fi。 */
+    @Test
+    fun aNetworkThatIsNotWifiNeverOpensThePage() {
+        assertNull(target(network = home.copy(isWifi = false)))
+        assertNull(target(network = campus.copy(ssid = "", isWifi = false)))
     }
 
     @Test

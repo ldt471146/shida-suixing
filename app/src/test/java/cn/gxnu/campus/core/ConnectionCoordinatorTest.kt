@@ -223,16 +223,37 @@ class ConnectionCoordinatorTest {
         assertEquals(listOf("verify:wifi-1"), transport.events)
     }
 
-    // Catches a case-insensitive SSID gate sending campus credentials to a different Wi-Fi.
-    @Test fun ssidCaseVariantsNeverStartCampusTransport() = runTest {
+    // 一个**读得出名字**、又不是校园网的网络必须被挡住 —— 这时候名字就是证据。
+    // 反过来，读不出名字的网络不再一律当成外网（见下一条）：Android 没给定位权限时会把
+    // 任何 Wi-Fi 的名字都抹成占位符，学校换 SSID 也一样，把这些人挡在外面就是这次报的故障。
+    @Test fun aNamedWifiThatIsNotTheCampusOneNeverStartsCampusTransport() = runTest {
         val transport = TestTransport()
         val coordinator = ConnectionCoordinator(this, transport)
-        listOf("gxnu-yc", "Gxnu-YC", "GXNU-yc").forEachIndexed { index, ssid ->
+        listOf("Home-WiFi", "Guest", "GXNU-YC-5G", "gxnu-yc").forEachIndexed { index, ssid ->
             coordinator.update(NetworkSnapshot("other-$index", ssid, true), credentials, Provider.CAMPUS, autoConnect = true)
             coordinator.connect()
             runCurrent()
-            assertEquals(ConnectionStatus.OUTSIDE_CAMPUS, coordinator.state.value.status)
+            assertEquals("「$ssid」不是校园网", ConnectionStatus.OUTSIDE_CAMPUS, coordinator.state.value.status)
             assertTrue(transport.events.isEmpty())
+        }
+    }
+
+    /**
+     * 用户报的故障：手机明明连在校园网上，应用却说「请切换校园 Wi-Fi」。名字读不出来的 Wi-Fi
+     * 不能再被当成外网 —— 名字和校园网对不上只是「不知道」，不是「不是」。
+     */
+    @Test fun aWifiWhoseNameCannotBeReadIsOfferedForAuthentication() = runTest {
+        val transport = TestTransport()
+        val coordinator = ConnectionCoordinator(this, transport)
+        listOf("", "未识别 Wi-Fi").forEachIndexed { index, ssid ->
+            coordinator.update(NetworkSnapshot("unnamed-$index", ssid, true), credentials, Provider.CAMPUS)
+            runCurrent()
+            assertEquals("「$ssid」应被视为可认证，而不是外网", ConnectionStatus.READY, coordinator.state.value.status)
+
+            coordinator.connect()
+            runCurrent()
+            assertEquals("认证必须真的发出去", true, transport.events.isNotEmpty())
+            transport.events.clear()
         }
     }
 

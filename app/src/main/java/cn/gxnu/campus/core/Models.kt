@@ -15,11 +15,27 @@ enum class ConnectionStatus {
     READY, PREPARING, CHECKING, AUTHENTICATING, VERIFYING, ONLINE, AUTH_ERROR, UNREACHABLE, CANCELLED
 }
 
+/**
+ * 校园网的 Wi-Fi 名。它**只是**一个「先看这个」的提示，不再是准入条件。
+ *
+ * 学校可能换 SSID、同一栋楼可能有两张校园网、Android 在没拿到定位权限时还会把名字
+ * 抹成 `未识别 Wi-Fi`。这些情况下名字都对不上，而手机其实就好好连在校园网上 —— 所以
+ * 真正决定「这是不是校园网」的是[校园认证入口本身](CampusPortal)，不是这个字符串。
+ */
+const val CAMPUS_SSID_HINT = "GXNU-YC"
+
+/** 读不到名字时 [NetworkSnapshot.ssid] 用的占位符；它和「确实是别的 Wi-Fi」是两回事。 */
+const val UNKNOWN_SSID = "未识别 Wi-Fi"
+
 data class NetworkSnapshot(
     val id: String, val ssid: String, val isWifi: Boolean,
     val isValidated: Boolean? = null, val isCaptivePortal: Boolean? = null
 ) {
-    val isCampus: Boolean get() = isWifi && ssid == "GXNU-YC"
+    /** 名字读出来了，而且是校园网那一张 —— 可以直接放行，不必先去问认证页。 */
+    val isNamedCampus: Boolean get() = isWifi && ssid == CAMPUS_SSID_HINT
+
+    /** 这张 Wi-Fi 的名字根本没读出来，所以「它是不是校园网」无从判断。 */
+    val hasUnknownName: Boolean get() = ssid.isBlank() || ssid == UNKNOWN_SSID
 }
 
 internal fun NetworkSnapshot.hasSameIdentityAs(other: NetworkSnapshot?): Boolean =

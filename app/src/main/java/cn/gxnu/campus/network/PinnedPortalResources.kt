@@ -39,7 +39,9 @@ internal class PinnedPortalResources(
 
     /** Called from WebView's interception thread; never falls back to the default network. */
     fun load(url: String, method: String = "GET", headers: Map<String, String> = emptyMap(), mainFrame: Boolean = false): PinnedPortalReply {
-        if (method != "GET" || !network.isCampus || !permits(url)) return denied()
+        // The name is deliberately not part of this check: the interceptor exists to keep requests on
+        // the network we are authenticating on, and a school that renames its SSID must not break it.
+        if (method != "GET" || !network.isWifi || !permits(url)) return denied()
         if (closed.get()) return failed(PortalFailure.UNREACHABLE)
         var current = URL(url)
         try {

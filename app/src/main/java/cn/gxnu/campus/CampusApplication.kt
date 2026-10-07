@@ -519,14 +519,9 @@ class CampusRuntime(private val application: Application) : CampusActions {
                 configurationChanges == 0 && wantsAuto && foregroundRunning && credentialState.remembered)
     }
 
-    private fun connectionMessage(): String {
-        val connection = coordinator.state.value
-        return when {
-            connection.status == ConnectionStatus.NEED_PERMISSION -> permissionMessage()
-            connection.status == ConnectionStatus.OUTSIDE_CAMPUS && wifi.state.value.network?.ssid == "未识别 Wi-Fi" ->
-                "Wi-Fi 名称暂时无法识别，请确认已连接 GXNU-YC 并重试。"
-            else -> connection.message
-        }
+    private fun connectionMessage(): String = when {
+        coordinator.state.value.status == ConnectionStatus.NEED_PERMISSION -> permissionMessage()
+        else -> coordinator.state.value.message
     }
 
     private fun render() {
@@ -601,7 +596,9 @@ internal fun embeddedPortalTarget(
 ): VisiblePortalTarget? {
     // Changes in flight invalidate the runtime's view of both the network and the account.
     if (initializing || configurationChanges > 0) return null
-    val campus = network?.takeIf { it.isCampus } ?: return null
+    // Any Wi-Fi the caller is about to authenticate on qualifies — see readyState(): a name that was
+    // never read, or a school that renamed its SSID, must not lock the user out of the portal page.
+    val campus = network?.takeIf { it.isWifi } ?: return null
     val account = credentials ?: return null
     val selected = provider ?: return null
     return VisiblePortalTarget(campus, account, selected)

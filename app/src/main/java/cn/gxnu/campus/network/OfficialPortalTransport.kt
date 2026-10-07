@@ -45,7 +45,7 @@ class OfficialPortalTransport(context: Context, private val wifi: WifiEnvironmen
 
     @SuppressLint("SetJavaScriptEnabled")
     override suspend fun authenticate(network: NetworkSnapshot, credentials: Credentials, provider: Provider): Boolean {
-        if (!network.isCampus) throw PortalException(PortalFailure.UNREACHABLE, "请先连接 GXNU-YC 校园 Wi-Fi。")
+        if (!network.isWifi) throw PortalException(PortalFailure.UNREACHABLE, "请先连接校园 Wi-Fi。")
         val resources = PinnedPortalResources(network, TargetConnectionFactory { snapshot, url -> wifi.openConnection(snapshot, url) })
         val pageFailure = AtomicReference<PortalFailure?>(null)
         var view: WebView? = null

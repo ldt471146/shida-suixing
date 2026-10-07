@@ -195,7 +195,7 @@ class PortalClient internal constructor(private val connections: TargetConnectio
     }
 
     private fun requireCampus(network: NetworkSnapshot) {
-        if (!network.isCampus) throw PortalException(PortalFailure.UNREACHABLE, "请先连接 GXNU-YC 校园 Wi-Fi。")
+        if (!network.isWifi) throw PortalException(PortalFailure.UNREACHABLE, "请先连接校园 Wi-Fi。")
     }
 
     private data class HttpReply(val status: Int, val location: String?, val body: ByteArray) {

@@ -25,7 +25,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\preview-android.ps
 
 预览脚本检测指定设备，自动启动模拟器窗口并用 `adb install -r` 更新，保存的设置随更新保留。可用 `-State ONLINE`、`AUTH_ERROR`、`NO_WIFI` 等查看不同界面。`-Preview` 仅在 Debug APK 生效，使用独立内存控制器，不初始化凭据存储或校园认证模块；界面始终显示预览标识。
 
-APK 输出：`app/build/outputs/apk/release/app-release.apk`，本轮版本 0.8.0 / versionCode 16，可覆盖安装。正式分发走 GitHub Releases，见下节。
+APK 输出：`app/build/outputs/apk/release/app-release.apk`，本轮版本 0.8.1 / versionCode 17，可覆盖安装。正式分发走 GitHub Releases，见下节。
 
 ## 更新与分发
 
@@ -44,7 +44,7 @@ git push origin v0.6.0
 
 推送 `v*` 标签后 [发布工作流](.github/workflows/android-release.yml) 在 runner 上构建签名 APK，并发布 `shida-suixing-<版本>.apk` 与 `version.json`。应用读取 `version.json` 的 `versionCode` 判断是否需要更新。
 
-当前已发布：`v0.4.0`（versionCode 7）、`v0.4.1`（8）、`v0.4.2`（9）、`v0.5.0`（10）、`v0.6.0`（12）、`v0.6.1`（13）、`v0.7.0`（14）、`v0.7.1`（15）。`0.8.0`（16）为当前版本。
+当前已发布：`v0.4.0`（versionCode 7）、`v0.4.1`（8）、`v0.4.2`（9）、`v0.5.0`（10）、`v0.6.0`（12）、`v0.6.1`（13）、`v0.7.0`（14）、`v0.7.1`（15）。`0.8.0`（16）、`0.8.1`（17）为当前版本。
 
 签名密钥在仓库之外（`D:\gxsf-signing\release.jks`），通过仓库 Secrets 提供给 CI，不进入版本库。**请另行备份该密钥和口令**：丢失后已安装的旧版本无法再被覆盖更新。
 
@@ -90,7 +90,7 @@ powershell -NoProfile -File .\scripts\check-android.ps1 -Task lintDebug
 powershell -NoProfile -File .\scripts\check-android.ps1 -Task assembleRelease
 ```
 
-当前 302 个单元测试通过，`lintDebug` 无错误。发布构建需要 `local.properties` 里的 `signing.*`；缺失时回退到 debug 签名，产物不可分发。CI 的签名材料来自仓库 Secrets。
+当前 308 个单元测试通过，`lintDebug` 无错误。发布构建需要 `local.properties` 里的 `signing.*`；缺失时回退到 debug 签名，产物不可分发。CI 的签名材料来自仓库 Secrets。
 
 协议和协调器测试使用虚构数据，覆盖运营商、编码、JSONP 数据解析、重复操作、换网与账号变更、失败状态。账号密码不进入日志或源码，界面不拼接带凭据的 URL。官方适配器通过 `Network.openConnection` 绑定目标 Wi-Fi，保留系统 TLS 证书校验。
 
@@ -129,5 +129,21 @@ powershell -NoProfile -File .\scripts\check-android.ps1 -Task assembleRelease
 服务页课表那一行的说明也跟着改了（原来还写着已经删掉的「导入 Word / 拍照识别」）。
 
 **深色主题没有肉眼验证**：课程色仍取自 `CampusPalette` 的 token（`accentWash` / `successWash` / `warningWash` / `dangerWash` 与各自的 ink），两套主题都跟着走；但新的圆角与「—」空节只在浅色下看过。节次栏加宽会改变列宽，`TimetableGridFitTest` 里那几个钉住像素值的断言已按新值更新（5 天档位 52.8 → 46.0dp）。
+
+0.8.1 修**「手机已经连上校园网，应用却说没连」**。真根因不在识别 Wi-Fi 的代码，而在一行准入判断：校园网的身份曾经被写成「SSID 必须一字不差等于 `GXNU-YC`」。Android 在**没给定位权限**时会把任何 Wi-Fi 的名字抹成占位符 `未识别 Wi-Fi`，学校**改了 SSID** 时名字也对不上，两种情况下手机明明连在校园网上、应用却判定为「其他 Wi-Fi」并把用户挡在认证之外。
+
+现在校园网的身份**由校园认证入口自己回答**（它就是那台 AC/portal，对谁应答谁就是校园网），名字退化为「先看这个」的加速提示：
+
+- `NetworkSnapshot.isNamedCampus`（名字读出来且是校园网）与 `hasUnknownName`（名字根本没读出来）分开；**名字读不出来不再等于「不是校园网」**
+- 读不出名字照常进入「可以认证」，认证请求真的发出去，由认证页的结果定胜负
+- 名字**读得出来**但不是校园网的 Wi-Fi 仍然拒绝 —— 那时候名字才是证据
+- 内嵌认证页、`openConnection` 的名字门一并去掉（前者现在同样只要求「是一张 Wi-Fi」，后者本来就按网络 id 绑定，不靠名字）
+- 顺带删掉一条永远不可能触发的死分支（`OUTSIDE_CAMPUS` 且 SSID 为占位符）与三处把 SSID 写进用户可见文案的地方
+
+**取 UUID 的方式没有改** —— 有真实抓包样本证明它读到的 MAC 与系统一致，这条保持原样。这次只动了准入判断。
+
+`ConnectionCoordinatorTest` / `EmbeddedPortalAvailabilityTest` / `PortalClientTest` / `VisiblePortalTargetTest` 里钉住旧规则的 4 条断言已按新规则重写，并各自写清了为什么：**名字读得出但不是校园网 → 拒绝**；**名字读不出 → 放行去认证**。
+
+308 tests / 0 failures。真机上是否恢复仍需要用户实测（模拟器连不上 `GXNU-YC`）。
 
 新版实际画面及操作记录：[模拟器检查](docs/design/emulator-verification.md)、[当前浅色首页](docs/design/screenshots/v5-home-light.png)。更新链路的实现与边界见[应用内更新](docs/design/app-update.md)。真实校园网登录与手机后台重连尚未完成实测，预览结果仅用于界面检查。更新流程的下载与系统安装确认需在实体手机验证。

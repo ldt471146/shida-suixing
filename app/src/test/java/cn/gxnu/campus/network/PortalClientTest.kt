@@ -264,13 +264,33 @@ class PortalClientTest {
         assertEquals(listOf(campus, campus), seen)
     }
 
-    @Test fun otherWifiNeverOpensAnyRequestWithOrWithoutCredentials() = runTest {
+    /** 非 Wi-Fi（手机网络）没有可认证的链路，必须在发出任何请求之前就被拒。 */
+    @Test fun aNonWifiNetworkNeverOpensAnyRequestWithOrWithoutCredentials() = runTest {
         val client = PortalClient(TargetConnectionFactory { _, _ -> throw AssertionError("no request allowed") })
-        val other = NetworkSnapshot("other-fixture", "Home-Wifi", true)
+        val cellular = NetworkSnapshot("cellular-fixture", "", isWifi = false)
         try {
-            client.authenticate(other, Credentials("fixture", "fixture-password"), Provider.CAMPUS)
-            fail("other Wi-Fi must be rejected")
+            client.authenticate(cellular, Credentials("fixture", "fixture-password"), Provider.CAMPUS)
+            fail("a network that is not Wi-Fi must be rejected")
         } catch (failure: PortalException) { assertEquals(PortalFailure.UNREACHABLE, failure.reason) }
+        try {
+            client.verifyInternet(cellular)
+            fail("a network that is not Wi-Fi must be rejected")
+        } catch (failure: PortalException) { assertEquals(PortalFailure.UNREACHABLE, failure.reason) }
+    }
+
+    /**
+     * 名字读不出来的 Wi-Fi 要照常去问认证页 —— 学校换了 SSID、或本机没拿到定位权限时，
+     * 名字就是读不出来，而这跟「这是不是校园网」是两件事。是否真的走通了由认证页说了算。
+     */
+    @Test fun aWifiWithNoReadableNameStillAsksTheSchoolPortal() = runTest {
+        val seen = mutableListOf<NetworkSnapshot>()
+        val client = PortalClient(TargetConnectionFactory { network, url ->
+            seen += network
+            Reply(url, if (seen.size == 1) 200 else 204)
+        })
+        val unnamed = campus.copy(ssid = "未识别 Wi-Fi")
+        assertTrue("认证页说已在线，就该判定在线", client.verifyInternet(unnamed))
+        assertEquals("请求必须真的带着这张网络发出去", listOf(unnamed, unnamed), seen)
     }
 
     @Test fun transportErrorsDoNotExposeCredentialsOrRequestUrl() = runTest {
