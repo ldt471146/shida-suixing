@@ -662,7 +662,9 @@ private fun WeekGridCard(
                 SectionLabel("周课表")
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "${grid.days.size} 天 · 第 ${grid.periods.size} 节",
+                    // 这一周没有课时 grid.periods 是空的，直接说「第 0 节」是错的 —— 课表从第 1 节开始。
+                    if (grid.periods.isEmpty()) "${grid.days.size} 天 · 没有课"
+                    else "${grid.days.size} 天 · 第 ${grid.periods.size} 节",
                     style = MaterialTheme.typography.bodySmall,
                     color = palette.textTertiary
                 )

@@ -20,7 +20,7 @@ object CampusModules {
         CampusModule(
             id = "timetable",
             title = "课表",
-            description = "导入教务系统的 Word 课表，或拍照识别生成周课表。",
+            description = "登录研究生系统，把课表取回本机。",
             route = CampusRoute.TIMETABLE
         )
     )
