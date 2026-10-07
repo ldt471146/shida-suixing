@@ -1,40 +1,37 @@
 package cn.gxnu.campus.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Schedule
-import androidx.compose.material.icons.outlined.Wifi
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import cn.gxnu.campus.core.CampusModules
 import cn.gxnu.campus.core.CampusRoute
-import cn.gxnu.campus.ui.CampusUiState
-import cn.gxnu.campus.ui.common.CampusCard
 import cn.gxnu.campus.ui.common.CampusPageHeader
-import cn.gxnu.campus.ui.common.CampusPill
-import cn.gxnu.campus.ui.common.CampusRow
-import cn.gxnu.campus.ui.common.CampusRowDivider
-import cn.gxnu.campus.ui.common.NetworkStatusPill
-import cn.gxnu.campus.ui.common.SectionLabel
-import cn.gxnu.campus.ui.common.connectionHeadline
+import cn.gxnu.campus.ui.common.EntranceGate
+import cn.gxnu.campus.ui.common.entrance
+import cn.gxnu.campus.ui.common.rememberPageEntrance
 import cn.gxnu.campus.ui.theme.CampusSpace
-import cn.gxnu.campus.ui.theme.LocalCampusPalette
 
+/**
+ * 功能：一个两列的模块网格，每块只有图标和名字。
+ *
+ * 这里没有一句介绍、没有「后续计划」、没有页脚说明 —— 一页介绍会让「挑一件事做」变成「读一页
+ * 说明」。点开才是校园网，所以不认识校园网的人可以直接绕开。
+ */
 @Composable
 fun ServicesScreen(
-    state: CampusUiState,
-    onCampusNetwork: () -> Unit,
-    onTimetable: () -> Unit,
+    gate: EntranceGate,
+    onRoute: (CampusRoute) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val palette = LocalCampusPalette.current
-    LazyColumn(
+    val modules = CampusModules.available
+    val entrance = rememberPageEntrance(gate, "services", itemCount = 1)
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(2),
         modifier = modifier,
         contentPadding = PaddingValues(
             start = CampusSpace.lg,
@@ -42,62 +39,23 @@ fun ServicesScreen(
             top = CampusSpace.md,
             bottom = CampusSpace.xxl
         ),
-        verticalArrangement = Arrangement.spacedBy(CampusSpace.lg)
+        horizontalArrangement = Arrangement.spacedBy(CampusSpace.md),
+        verticalArrangement = Arrangement.spacedBy(CampusSpace.md)
     ) {
-        item {
-            CampusPageHeader(title = "校园服务", subtitle = "广西师范大学 · 育才校区")
+        item(key = "header", span = { GridItemSpan(maxLineSpan) }) {
+            CampusPageHeader(title = "功能", subtitle = "")
         }
-        item { SectionLabel("已上线", Modifier.padding(start = CampusSpace.xs)) }
-        item {
-            CampusCard {
-                CampusModules.available.forEachIndexed { index, module ->
-                    CampusRow(
-                        title = module.title,
-                        description = module.description,
-                        leadingIcon = if (module.route == CampusRoute.CAMPUS_NETWORK) Icons.Outlined.Wifi else Icons.Outlined.Schedule,
-                        leadingTint = if (module.route == CampusRoute.CAMPUS_NETWORK) palette.onAccentWash else null,
-                        leadingPlate = if (module.route == CampusRoute.CAMPUS_NETWORK) palette.accentWash else null,
-                        // The campus-network status belongs to the campus-network row only.
-                        trailing = if (module.route == CampusRoute.CAMPUS_NETWORK) {
-                            {
-                                // Until the runtime has read the saved settings there is no status to
-                                // report: state.status is still its NO_WIFI default, so a pill would
-                                // claim 未连接. 首页 answers the same state with the read-in-progress
-                                // headline, so this row borrows it instead of stating a verdict.
-                                if (state.initializing) {
-                                    CampusPill(connectionHeadline(state), palette.onAccentWash, palette.accentWash)
-                                } else {
-                                    NetworkStatusPill(state.status)
-                                }
-                            }
-                        } else null,
-                        onClick = {
-                            when (module.route) {
-                                CampusRoute.CAMPUS_NETWORK -> onCampusNetwork()
-                                CampusRoute.TIMETABLE -> onTimetable()
-                            }
-                        }
-                    )
-                    if (index < CampusModules.available.lastIndex) CampusRowDivider()
-                }
-            }
-        }
-        item { SectionLabel("后续计划", Modifier.padding(start = CampusSpace.xs)) }
-        item {
-            CampusCard {
-                CampusRow(
-                    title = "校历、校园办事",
-                    description = "以上服务尚未开放。",
-                    leadingIcon = Icons.Outlined.Schedule,
-                    showChevron = false
-                )
-            }
-        }
-        item {
-            Text(
-                "当前支持 Android，Windows 和 iPhone 后续提供。",
-                style = MaterialTheme.typography.bodySmall,
-                color = palette.textTertiary
+        itemsIndexed(
+            items = modules,
+            key = { _, module -> module.id },
+            contentType = { _, _ -> "module" }
+        ) { index, module ->
+            CampusModuleTile(
+                title = module.title,
+                icon = moduleIcon(module.route),
+                onClick = { onRoute(module.route) },
+                // 入场的错峰只属于网格本身；标题不参与，免得页面一进来就先动一下标题。
+                modifier = Modifier.entrance(entrance, index)
             )
         }
     }

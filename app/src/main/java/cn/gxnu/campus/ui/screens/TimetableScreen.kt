@@ -1,9 +1,13 @@
 package cn.gxnu.campus.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -15,18 +19,26 @@ import cn.gxnu.campus.core.TimetableCourse
 import cn.gxnu.campus.core.TimetableCourseSlots
 import cn.gxnu.campus.ui.TimetableActions
 import cn.gxnu.campus.ui.TimetableUiState
+import cn.gxnu.campus.ui.common.CampusIconButton
 import cn.gxnu.campus.ui.common.CampusPageHeader
+import cn.gxnu.campus.ui.common.EntranceGate
+import cn.gxnu.campus.ui.common.entrance
+import cn.gxnu.campus.ui.common.rememberPageEntrance
 import cn.gxnu.campus.ui.theme.CampusSpace
 import cn.gxnu.campus.ui.theme.LocalCampusPalette
 
 /**
- * 课表: 登录研究生系统，把课表取回本机，再按教学周读它。 Stateless apart from the login form and the
- * transient sheets, so the host owns all the state that matters.
+ * 课表：一周的课，和切换教学周的那一条。
+ *
+ * 页面就是周次切换 + 网格两件事；「课表管理」那一整张卡片已经收进右上角的图标里，今日课程也
+ * 已经归首页 —— 两个页面各答一个问题，谁也不替谁说半句。
  */
 @Composable
 fun TimetableScreen(
     state: TimetableUiState,
     actions: TimetableActions,
+    gate: EntranceGate,
+    onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     // The password stays out of saved state on purpose: it is a secret, not form data to restore, and
@@ -41,6 +53,7 @@ fun TimetableScreen(
     var loginRequested by remember { mutableStateOf(false) }
     var confirmingDelete by remember { mutableStateOf(false) }
     var settingTermStart by remember { mutableStateOf(false) }
+    var managing by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf<TimetableCourse?>(null) }
     var editor by remember { mutableStateOf<CourseEditorRequest?>(null) }
 
@@ -52,6 +65,7 @@ fun TimetableScreen(
     // A signed-out session keeps its 课表 on screen, so the login card only takes the slot over when
     // there is nothing to show or the user asked for it from 课表管理.
     val showLogin = state.account.isBlank() && (timetable == null || loginRequested)
+    val entrance = rememberPageEntrance(gate, "timetable", itemCount = 3)
 
     fun signIn() {
         val userId = account.trim()
@@ -72,67 +86,102 @@ fun TimetableScreen(
         ),
         verticalArrangement = Arrangement.spacedBy(CampusSpace.lg)
     ) {
-        item {
-            CampusPageHeader(
-                title = "课表",
-                subtitle = if (timetable == null) "登录研究生系统，把课表取回本机"
-                else "共 ${timetable.courseCount} 门课程 · 更新于 ${formatDate(timetable.recognizedAtMillis)}"
-            )
+        item(key = "header") {
+            Box(Modifier.entrance(entrance, 0)) {
+                CampusPageHeader(
+                    title = "课表",
+                    subtitle = when {
+                        timetable == null -> ""
+                        else -> "共 ${timetable.courseCount} 门课程 · 更新于 ${formatDate(timetable.recognizedAtMillis)}"
+                    },
+                    leading = {
+                        CampusIconButton(
+                            Icons.AutoMirrored.Outlined.ArrowBack,
+                            contentDescription = "返回功能",
+                            onClick = onBack
+                        )
+                    },
+                    trailing = if (timetable == null) null else {
+                        {
+                            CampusIconButton(
+                                Icons.Outlined.MoreVert,
+                                contentDescription = "课表管理",
+                                onClick = { managing = true }
+                            )
+                        }
+                    }
+                )
+            }
         }
         if (notice != null) {
-            item {
+            item(key = "notice") {
                 NoticeRow(notice) { actions.clearMessage(state.messageId) }
             }
         }
-        item {
-            when {
-                state.restoring -> LoadingCard()
-                showLogin -> LoginCard(
-                    account = account,
-                    password = passwordDraft,
-                    onAccountChange = {
-                        accountDraft = it
-                        accountMissing = false
-                    },
-                    onPasswordChange = {
-                        passwordDraft = it
-                        passwordMissing = false
-                    },
-                    remember = rememberAccount,
-                    onRememberChange = { rememberAccount = it },
-                    accountMissing = accountMissing,
-                    passwordMissing = passwordMissing,
-                    signingIn = state.signingIn,
-                    onSubmit = { signIn() }
-                )
-                timetable != null -> TimetableSection(
-                    state = state,
-                    timetable = timetable,
-                    showingCurrentWeek = showingCurrentWeek,
-                    busy = state.signingIn,
-                    onSelectWeek = actions::selectWeek,
-                    onCurrentWeek = actions::showCurrentWeek,
-                    onSetTermStart = { settingTermStart = true },
-                    onCourse = { detail = it }
-                )
-                else -> NoTimetableCard(signingIn = state.signingIn, onRefresh = actions::refresh)
+        item(key = "body") {
+            Box(Modifier.entrance(entrance, 1)) {
+                when {
+                    state.restoring -> LoadingCard()
+                    showLogin -> LoginCard(
+                        account = account,
+                        password = passwordDraft,
+                        onAccountChange = {
+                            accountDraft = it
+                            accountMissing = false
+                        },
+                        onPasswordChange = {
+                            passwordDraft = it
+                            passwordMissing = false
+                        },
+                        remember = rememberAccount,
+                        onRememberChange = { rememberAccount = it },
+                        accountMissing = accountMissing,
+                        passwordMissing = passwordMissing,
+                        signingIn = state.signingIn,
+                        onSubmit = { signIn() }
+                    )
+                    timetable != null -> TimetableSection(
+                        state = state,
+                        timetable = timetable,
+                        showingCurrentWeek = showingCurrentWeek,
+                        onSelectWeek = actions::selectWeek,
+                        onCurrentWeek = actions::showCurrentWeek,
+                        onSetTermStart = { settingTermStart = true },
+                        onCourse = { detail = it }
+                    )
+                    else -> NoTimetableCard(signingIn = state.signingIn, onRefresh = actions::refresh)
+                }
             }
         }
-        // 课表管理 only earns its place once a timetable is on screen: before that the login card
-        // owns the page and already carries the one action that matters.
-        if (timetable != null) {
-            item {
-                ManageCard(
-                    account = state.account,
-                    signingIn = state.signingIn,
-                    onRefresh = actions::refresh,
-                    onSignIn = { loginRequested = true },
-                    onSignOut = actions::signOut,
-                    onDelete = { confirmingDelete = true },
-                    onAddCourse = { editor = CourseEditorRequest(index = null, course = null) }
-                )
-            }
-        }
+    }
+
+    if (managing && timetable != null) {
+        TimetableManageSheet(
+            account = state.account,
+            signingIn = state.signingIn,
+            onRefresh = {
+                managing = false
+                actions.refresh()
+            },
+            onSignIn = {
+                managing = false
+                loginRequested = true
+            },
+            onSignOut = actions::signOut,
+            onDelete = {
+                managing = false
+                confirmingDelete = true
+            },
+            onAddCourse = {
+                managing = false
+                editor = CourseEditorRequest(index = null, course = null)
+            },
+            onSetTermStart = {
+                managing = false
+                settingTermStart = true
+            },
+            onDismiss = { managing = false }
+        )
     }
 
     if (confirmingDelete) {
@@ -215,7 +264,6 @@ private fun TimetableSection(
     state: TimetableUiState,
     timetable: Timetable,
     showingCurrentWeek: Boolean,
-    busy: Boolean,
     onSelectWeek: (Int) -> Unit,
     onCurrentWeek: () -> Unit,
     onSetTermStart: () -> Unit,
@@ -232,14 +280,6 @@ private fun TimetableSection(
             onCurrentWeek = onCurrentWeek,
             onSetTermStart = onSetTermStart
         )
-        TodayCard(
-            state = state,
-            timetable = timetable,
-            showingCurrentWeek = showingCurrentWeek,
-            slots = slots,
-            busy = busy,
-            onCourse = onCourse
-        )
         WeekGridCard(
             timetable = timetable,
             week = state.selectedWeek,
@@ -251,4 +291,3 @@ private fun TimetableSection(
         )
     }
 }
-

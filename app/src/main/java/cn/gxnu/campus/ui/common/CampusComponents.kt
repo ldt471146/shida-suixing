@@ -1,7 +1,9 @@
 package cn.gxnu.campus.ui.common
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +29,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -156,9 +159,23 @@ fun CampusRow(
     trailing: (@Composable () -> Unit)? = null
 ) {
     val palette = LocalCampusPalette.current
-    val interactive = if (onClick != null) Modifier.clickable(enabled = enabled, role = Role.Button, onClick = onClick) else Modifier
+    val interaction = remember { MutableInteractionSource() }
+    val interactive = if (onClick != null) {
+        Modifier.clickable(
+            interactionSource = interaction,
+            indication = LocalIndication.current,
+            enabled = enabled,
+            role = Role.Button,
+            onClick = onClick
+        )
+    } else {
+        Modifier
+    }
     Row(
-        modifier.fillMaxWidth().then(interactive)
+        modifier.fillMaxWidth()
+            // 按压反馈挂在整行的最外层：它只动绘制阶段的缩放与透明度，行内的排版一个像素都不动。
+            .then(if (onClick != null) Modifier.pressFeedback(interaction, enabled) else Modifier)
+            .then(interactive)
             .heightIn(min = 56.dp)
             .padding(horizontal = CampusSpace.lg, vertical = CampusSpace.md),
         verticalAlignment = Alignment.CenterVertically

@@ -23,8 +23,8 @@ android {
         applicationId = "cn.gxnu.campus"
         minSdk = 26
         targetSdk = 34
-        versionCode = 19
-        versionName = "0.8.3"
+        versionCode = 20
+        versionName = "0.9.0"
     }
 
     signingConfigs {

@@ -1,5 +1,29 @@
 # Android 实际预览检查
 
+## 0.9.0 界面重排检查
+
+2026-10-08，在同一 `gxnu_preview` 模拟器（`emulator-5554`）上装 **release 签名包**（R8）检查 0.9.0（versionCode 20）。35 个测试套件 362 项全绿，`lintDebug` 0 错误（11 条 warning 全是既有的），`assembleRelease` 产出 11,184,202 字节签名包。
+
+**截图怎么拍的（口径）**：`MainActivity.kt:62` 是 `preview = BuildConfig.DEBUG && …`，**release 包进不了预览模式**，`--ez campus.preview true` 会被忽略。所以全部截图走正常模式：安装 release 包 → 应用因「未配置账号」强制跳到账号页 → 点「稍后设置」落到首页 → 之后用 `uiautomator dump` 读 `bounds` 再 `input tap` 逐个页面走。**坐标没有一处是硬编码的**。
+
+| 场景 | 证据 |
+| --- | --- |
+| 首页（今日课程 + 两个入口，不再有校园网卡） | [首页](screenshots/v9-home.png) |
+| 功能（只剩图标 + 名称，无描述/无后续计划/无页脚） | [功能](screenshots/v9-functions.png) |
+| 校园网（从功能点进来，功能 tab 保持点亮） | [校园网](screenshots/v9-campus-network.png)、[课表管理弹层](screenshots/v9-timetable-manage.png) |
+| 课表（标题 + ⋮ + 周次切换 + 网格，无管理卡片、无今日卡片） | [课表](screenshots/v9-timetable.png) |
+| 我的（身份区 + 常用三项 + 设置入口） | [我的](screenshots/v9-profile.png) |
+| 设置（外观 / 连接 / 更新三组，检查更新在里面） | [设置](screenshots/v9-settings.png) |
+| 系统关闭动画时首页仍以终值渲染 | [动画关闭](screenshots/v9-home-motion-off.png) |
+
+**返回路径实测**（uiautomator 读回文本确认，不是推断）：我的 → 设置 → 返回 = 我的；功能 → 校园网 → 校园账号 → 返回 = 校园网（不是首页）；再返回 = 功能。
+
+**一次被证伪的怀疑（值得留档）**：账号保存成功后 `onSaved` 走 `goBack()`，而它带 `state.accountSaving` 守卫。读代码时怀疑「`saveAccount` 返回时 `state` 还是上一帧的快照，守卫会把跳转吃掉、把用户留在账号页」。**在设备上两条路径各测一遍**：首次保存（会弹系统通知权限框）与二次保存（不弹框、`accountChanges` 刚归零）。两次都在 0.7 秒内回到「我的」，并显示「校园网账号已安全保存，选择供应商后即可连接。」，**怀疑不成立**。测试用的是虚构账号 `2026000001`，测完已删除；本文不记录任何真实凭据。
+
+**帧率口径**：`dumpsys gfxinfo` 在同一个模拟器上跑完整导航脚本得到 Total 533 帧 / Janky 37（6.94%）/ 50th 26ms。**这不是结论**：该模拟器 `ro.hardware.egl=emulation`（软件渲染），且**没有改版前的 A/B 基线**。它只说明没有异常抖动。真机复测才算数。
+
+**没做的**：深色主题下这六个页面没有重新截图；课表网格不是 Lazy 布局，因此那里没有稳定 key（改成 Lazy 会动到 16 条像素级列宽断言，本次不动）。
+
 ## 0.8.3 校园网准入检查
 
 2026-10-07，在同一 `gxnu_preview` 模拟器上检查 0.8.3（versionCode 19）。32 个测试套件 325 项全绿，`lintDebug` 0 错误，`assembleRelease` 产出 11,135,050 字节的签名包，安装到 `emulator-5554` 后 `versionName=0.8.3 / versionCode=19`，启动后 `FATAL EXCEPTION` 为 0。

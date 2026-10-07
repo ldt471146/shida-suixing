@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -22,49 +21,37 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.Logout
-import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.CalendarMonth
-import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Today
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import cn.gxnu.campus.core.TIMETABLE_WEEKDAYS
-import cn.gxnu.campus.core.Timetable
-import cn.gxnu.campus.core.TimetableCourse
 import cn.gxnu.campus.ui.TimetableUiState
 import cn.gxnu.campus.ui.common.CampusCard
 import cn.gxnu.campus.ui.common.CampusPill
-import cn.gxnu.campus.ui.common.CampusPrimaryButton
-import cn.gxnu.campus.ui.common.SectionLabel
 import cn.gxnu.campus.ui.theme.CampusRadius
 import cn.gxnu.campus.ui.theme.CampusSpace
 import cn.gxnu.campus.ui.theme.LocalCampusPalette
 
-/** Week strip, 当前周 affordance and the term start the whole calculation hangs off. */
+/** Week strip and the term start the whole calculation hangs off. Compact on purpose: it is the one
+ * card the 课表 page keeps above the grid. */
 @Composable
 internal fun WeekSwitcherCard(
     state: TimetableUiState,
@@ -109,7 +96,8 @@ internal fun WeekSwitcherCard(
                 state = strip,
                 horizontalArrangement = Arrangement.spacedBy(CampusSpace.xs)
             ) {
-                items(count = state.weekCount) { index ->
+                // 每个周次有自己的 key：滚动、跳周和重新取回课表时，条目不会被当成「换了一批」。
+                items(count = state.weekCount, key = { index -> index + 1 }) { index ->
                     val week = index + 1
                     WeekChip(
                         week = week,
@@ -118,13 +106,6 @@ internal fun WeekSwitcherCard(
                         onClick = { onSelectWeek(week) }
                     )
                 }
-            }
-            if (state.termStartEpochDay == null) {
-                Text(
-                    "设置开学日期后，本机可以算出当前是第几周，单双周和上课周次也能对上。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = palette.textTertiary
-                )
             }
         }
     }
@@ -169,135 +150,6 @@ private fun WeekChip(week: Int, selected: Boolean, current: Boolean, onClick: ()
     }
 }
 
-/** What is taught on today's weekday of the week being shown. */
-@Composable
-internal fun TodayCard(
-    state: TimetableUiState,
-    timetable: Timetable,
-    showingCurrentWeek: Boolean,
-    slots: Map<TimetableCourse, Int>,
-    busy: Boolean,
-    onCourse: (TimetableCourse) -> Unit
-) {
-    val palette = LocalCampusPalette.current
-    val weekday = state.todayWeekday
-    val weekdayLabel = TIMETABLE_WEEKDAYS[weekday - 1]
-    val courses = remember(timetable, weekday, state.selectedWeek) {
-        timetable.coursesOn(weekday, state.selectedWeek)
-    }
-    CampusCard {
-        Column(Modifier.padding(CampusSpace.lg), verticalArrangement = Arrangement.spacedBy(CampusSpace.md)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        if (showingCurrentWeek) "今日课程" else "第 ${state.selectedWeek} 周 · $weekdayLabel",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = palette.textPrimary,
-                        modifier = Modifier.semantics { heading() }
-                    )
-                    Text(
-                        when {
-                            showingCurrentWeek -> "$weekdayLabel · 第 ${state.selectedWeek} 周"
-                            state.termStartEpochDay == null -> "未设置开学日期，先按第 ${state.selectedWeek} 周显示"
-                            else -> "正在查看第 ${state.selectedWeek} 周"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = palette.textTertiary
-                    )
-                }
-                if (courses.isNotEmpty()) {
-                    CampusPill("${courses.size} 节", palette.textSecondary, palette.muted)
-                }
-            }
-            when {
-                busy && courses.isEmpty() -> Unit
-                courses.isEmpty() -> Column(verticalArrangement = Arrangement.spacedBy(CampusSpace.xs)) {
-                    Text(
-                        if (showingCurrentWeek) "今天没课" else "这一天没有课",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = palette.textSecondary
-                    )
-                    Text(
-                        if (showingCurrentWeek) "可以休息，或者看看这周的其他安排。"
-                        else "换一个周次，或者回到当前周。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = palette.textTertiary
-                    )
-                }
-                else -> Column {
-                    courses.forEachIndexed { index, course ->
-                        TodayCourseRow(
-                            course = course,
-                            time = timetable.timeSpanOf(course),
-                            tint = tintAt(palette, slots[course] ?: 0),
-                            onClick = { onCourse(course) }
-                        )
-                        if (index < courses.lastIndex) {
-                            HorizontalDivider(color = palette.border)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// Label columns are stated in sp rather than dp so they grow with the font scale instead of
-// ellipsising a real value ("11-12", "上课时间") once the user turns the text size up. Every row of a
-// list shares one width, so the column beside it stays aligned from row to row. The 今日 period
-// column holds a whole label — "第3-4节" — so it is sized for the widest of them.
-private val TodayPeriodColumnWidth = 56.sp
-
-@Composable
-private fun TodayCourseRow(course: TimetableCourse, time: String?, tint: CourseTint, onClick: () -> Unit) {
-    val palette = LocalCampusPalette.current
-    Row(
-        Modifier.fillMaxWidth()
-            .clickable(role = Role.Button, onClick = onClick)
-            .heightIn(min = 56.dp)
-            .padding(vertical = CampusSpace.sm),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // The colour rule ties this row to the same course in the grid below.
-        Box(Modifier.width(3.dp).height(36.dp).background(tint.rule, CampusRadius.pillShape))
-        Spacer(Modifier.width(CampusSpace.md))
-        val periodWidth = with(LocalDensity.current) { TodayPeriodColumnWidth.toDp() }
-        // One line, and the whole label off the course itself: a bare "3" with a "节" underneath
-        // would cost the row a second line to say what 第3节 already says.
-        Text(
-            course.periodLabel,
-            modifier = Modifier.width(periodWidth),
-            style = MaterialTheme.typography.labelLarge,
-            color = tint.ink,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Spacer(Modifier.width(CampusSpace.sm))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                course.name,
-                style = MaterialTheme.typography.titleSmall,
-                color = palette.textPrimary,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                listOfNotNull(course.detailLabel.ifBlank { "教师、教室未填写" }, time).joinToString(" · "),
-                style = MaterialTheme.typography.bodySmall,
-                color = palette.textTertiary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        Icon(
-            Icons.Outlined.ChevronRight,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-            tint = palette.textTertiary
-        )
-    }
-}
-
 @Composable
 internal fun LoadingCard() {
     val palette = LocalCampusPalette.current
@@ -313,72 +165,6 @@ internal fun LoadingCard() {
                 style = MaterialTheme.typography.bodyMedium,
                 color = palette.textSecondary
             )
-        }
-    }
-}
-
-/** 课表管理: 更新课表、手动补课，或者删掉本机保存的这一份。 */
-@Composable
-internal fun ManageCard(
-    account: String,
-    signingIn: Boolean,
-    onRefresh: () -> Unit,
-    onSignIn: () -> Unit,
-    onSignOut: () -> Unit,
-    onDelete: () -> Unit,
-    onAddCourse: () -> Unit
-) {
-    val palette = LocalCampusPalette.current
-    val signedIn = account.isNotBlank()
-    CampusCard {
-        Column(Modifier.padding(CampusSpace.lg), verticalArrangement = Arrangement.spacedBy(CampusSpace.md)) {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                SectionLabel("课表管理")
-                Text(
-                    // 退出登录 之后课表还在，所以这一行说清楚现在这份课表是谁的、还能不能更新。
-                    if (signedIn) "已登录 $account" else "未登录 · 正在用本机保存的课表",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = palette.textTertiary
-                )
-            }
-            // 更新课表 is the one action that keeps this page in step with the 研究生系统, so it leads.
-            CampusPrimaryButton(
-                title = when {
-                    signingIn -> "正在更新…"
-                    signedIn -> "更新课表"
-                    else -> "登录研究生系统"
-                },
-                onClick = if (signedIn) onRefresh else onSignIn,
-                busy = signingIn,
-                showProgress = false
-            )
-            // A fetched timetable is allowed to be wrong, so the manual route comes before everything
-            // else: typing a missing 上课地点 must never require another round trip to the server.
-            OutlinedActionButton("添加课程", Icons.Outlined.Add, onAddCourse, Modifier.fillMaxWidth(), enabled = !signingIn)
-            Text(
-                "取回来的课表有出入的地方都可以手动补正，包括上课地点；不会影响其他课程。",
-                style = MaterialTheme.typography.bodySmall,
-                color = palette.textTertiary
-            )
-            OutlinedActionButton(
-                "退出登录",
-                Icons.AutoMirrored.Outlined.Logout,
-                onSignOut,
-                Modifier.fillMaxWidth(),
-                enabled = signedIn && !signingIn
-            )
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onDelete, enabled = !signingIn, modifier = Modifier.heightIn(min = 44.dp)) {
-                    Icon(
-                        Icons.Outlined.Delete,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = palette.danger
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text("删除课表", color = palette.danger, style = MaterialTheme.typography.labelLarge)
-                }
-            }
         }
     }
 }
