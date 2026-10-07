@@ -37,6 +37,29 @@ class TimetableWordImporterTest {
         assertEquals(emptyList<TimetableCourse>(), result.timetable.courses.filter { it.teacher == "朱红艳" })
     }
 
+    /**
+     * The 节次 column prints a clock per period, and that is what the grid gutter shows. A course
+     * that runs through several periods spans from its first clock to its last.
+     */
+    @Test
+    fun `the clocks the gutter prints come through per period`() {
+        val timetable = TimetableWordImporter.read(WordDocument(listOf(WordTable(printedMatrix()))), "", 0L).timetable
+
+        assertEquals("08:30-09:10", timetable.periodTime(1))
+        assertEquals("11:40-12:20", timetable.periodTime(5))
+        assertEquals("14:00-14:40", timetable.periodTime(6))
+        assertEquals("20:30-21:10", timetable.periodTime(13))
+        assertEquals(null, timetable.periodTime(14))
+
+        assertEquals("14:00-17:00", timetable.timeSpanOf(course(timetable, "非线性系统与混沌1班", 1)))
+        assertEquals("09:15-12:20", timetable.timeSpanOf(course(timetable, "中国式现代化的理论与实践（电子1班）", 2)))
+        assertEquals("14:00-16:15", timetable.timeSpanOf(course(timetable, "马克思主义与当代科技（电子1班）", 3)))
+        assertEquals("18:20-21:10", timetable.timeSpanOf(course(timetable, "深度学习1班", 5)))
+    }
+
+    private fun course(timetable: Timetable, name: String, weekday: Int): TimetableCourse =
+        timetable.courses.first { it.name == name && it.weekday == weekday }
+
     @Test
     fun `a document with no timetable table is refused and says so`() {
         val prose = WordDocument(listOf(WordTable(listOf(listOf(WordCell(listOf("通知")), WordCell(listOf("内容")))))))

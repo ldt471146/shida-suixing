@@ -39,6 +39,8 @@ object TimetableWordImporter {
         val drafts = mutableListOf<TimetableCourseDraft>()
         // The draft each weekday column's last course opened, so a vertical merge can extend it.
         val open = mutableMapOf<Int, Int>()
+        // The clock the 节次 column prints for each period, which is what the grid gutter shows.
+        val times = mutableMapOf<Int, String>()
         var period = 0
         var skipped = 0
 
@@ -49,6 +51,7 @@ object TimetableWordImporter {
                 continue
             }
             period = periodOf(labels) ?: (period + 1)
+            clockOf(labels)?.let { times[period] = it }
 
             for ((column, weekday) in shape.weekdays) {
                 val cell = row.getOrNull(column) ?: continue
@@ -66,8 +69,30 @@ object TimetableWordImporter {
             }
         }
 
-        return WordImportResult(TimetableValidator.build(term, drafts, recognizedAtMillis), skipped)
+        // Positions are kept so `periodTimes[3]` is still 第 4 节 even when a row states no clock.
+        val periodTimes = (1..(times.keys.maxOrNull() ?: 0)).map { times[it].orEmpty() }
+        return WordImportResult(
+            TimetableValidator.build(term, drafts, recognizedAtMillis, periodTimes),
+            skipped
+        )
     }
+
+    /**
+     * `08:30-09:10` as the 节次 gutter prints it, normalised to the one shape the model stores and
+     * the renderer expects: ASCII colon and hyphen, no spaces. A full-width colon is what some
+     * exports print, and `~` is what some use for the dash.
+     */
+    private fun clockOf(labels: List<String>): String? = labels
+        .firstNotNullOfOrNull { TIME_RANGE.find(it)?.value }
+        ?.map { char ->
+            when (char) {
+                '：' -> ':'
+                '~', '～', '—', '－', '至' -> '-'
+                else -> char
+            }
+        }
+        ?.filterNot { it.isWhitespace() }
+        ?.joinToString("")
 
     /** A cell that carries a course, or null when the line is punctuation or a stray label. */
     private fun draftOf(line: String, weekday: Int, period: Int): TimetableCourseDraft? {

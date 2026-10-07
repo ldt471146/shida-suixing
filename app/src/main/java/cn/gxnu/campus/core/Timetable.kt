@@ -41,12 +41,51 @@ data class TimetableCourse(
         }
 }
 
+/** The clock label of one period, e.g. `08:30-09:10` — what the printed 节次 column states. */
+const val TIMETABLE_MAX_TIME_LENGTH = 16
+
 data class Timetable(
     val term: String,
     val courses: List<TimetableCourse>,
-    val recognizedAtMillis: Long
+    val recognizedAtMillis: Long,
+    /**
+     * The clock label of every period, index 0 being 第 1 节. A printed timetable states these in
+     * its 节次 column, so an import knows them exactly; a recognition reads 上午1 / 下午6 style
+     * labels instead and leaves this empty, which is why every reader of it is nullable.
+     */
+    val periodTimes: List<String> = emptyList()
 ) {
     val courseCount: Int get() = courses.size
+
+    /** The label of [period] as printed, or null when the source did not state one. */
+    fun periodTime(period: Int): String? = periodTimes.getOrNull(period - 1)?.takeIf { it.isNotEmpty() }
+
+    /** The clock of the first period [course] occupies, e.g. `14:00`. */
+    fun startTimeOf(course: TimetableCourse): String? = clockAt(periodTime(course.startPeriod), 0)
+
+    /** The clock the last period of [course] ends at, e.g. `16:15`. */
+    fun endTimeOf(course: TimetableCourse): String? = clockAt(periodTime(course.endPeriod), 1)
+
+    /**
+     * `14:00-16:15` for the whole span of [course]. A course that runs through one period states
+     * that period's own range; one that runs through several joins its first clock to its last.
+     */
+    fun timeSpanOf(course: TimetableCourse): String? {
+        val first = startTimeOf(course) ?: return null
+        val last = endTimeOf(course) ?: return null
+        return if (first == last) null else "$first-$last"
+    }
+
+    /** Which half of an `HH:MM-HH:MM` label [part] is: 0 is the start, 1 is the end. */
+    private fun clockAt(label: String?, part: Int): String? {
+        val clocks = label?.split('-')?.map { it.trim() } ?: return null
+        if (clocks.size != 2) return null
+        return clocks.getOrNull(part)?.takeIf { CLOCK.matches(it) }
+    }
+
+    private companion object {
+        val CLOCK = Regex("\\d{1,2}:\\d{2}")
+    }
 
     /** The last teaching week any course reaches, so the week switcher never offers an empty tail. */
     val weekCount: Int get() = courses.maxOfOrNull { it.endWeek }?.coerceIn(1, TIMETABLE_MAX_WEEKS) ?: 1
@@ -86,15 +125,32 @@ class TimetableException(val failure: TimetableFailure, message: String) : Excep
  */
 object TimetableValidator {
 
-    fun build(term: String?, courses: List<TimetableCourseDraft>, recognizedAtMillis: Long): Timetable {
+    fun build(
+        term: String?,
+        courses: List<TimetableCourseDraft>,
+        recognizedAtMillis: Long,
+        periodTimes: List<String> = emptyList()
+    ): Timetable {
         if (courses.isEmpty()) throw TimetableException(TimetableFailure.NO_COURSES, "没有从图片里识别到课程，请换一张更清晰的课表照片。")
         if (courses.size > TIMETABLE_MAX_COURSES) throw TimetableException(TimetableFailure.TOO_MANY_COURSES, "识别到的课程过多（超过 $TIMETABLE_MAX_COURSES 门），请换一张课表照片。")
         val parsed = courses.mapIndexed { index, draft -> parseCourse(draft, index + 1) }
         // A merged cell is often transcribed as one row per period; identical rows are one course.
         val distinct = parsed.distinct()
         rejectConflicts(distinct)
-        return Timetable(normalizeText(term, TIMETABLE_MAX_TEXT_LENGTH), distinct, recognizedAtMillis)
+        val times = normalizePeriodTimes(periodTimes)
+        return Timetable(normalizeText(term, TIMETABLE_MAX_TEXT_LENGTH), distinct, recognizedAtMillis, times)
     }
+
+    /**
+     * The 节次 column of a printed timetable states a clock range per period. It travels beside the
+     * courses rather than inside them — one label belongs to a period, not to a course — and a label
+     * that is not a clock range is dropped rather than rendered, so a hand-edited preference cannot
+     * put arbitrary text in the grid gutter. Positions are kept, so `periodTimes[3]` stays 第 4 节.
+     */
+    private fun normalizePeriodTimes(values: List<String>): List<String> = values
+        .take(TIMETABLE_MAX_PERIODS)
+        .map { value -> value.trim().takeIf { TIME_LABEL.matches(it) }.orEmpty() }
+        .dropLastWhile { it.isEmpty() }
 
     private fun parseCourse(draft: TimetableCourseDraft, position: Int): TimetableCourse {
         val name = normalizeText(draft.name, TIMETABLE_MAX_TEXT_LENGTH)
@@ -230,6 +286,9 @@ object TimetableValidator {
     )
     private val ODD_MARKERS = "单奇".toCharArray()
     private val EVEN_MARKERS = "双偶".toCharArray()
+
+    /** What the 节次 column prints: `08:30-09:10`. Anything else is not a clock and is dropped. */
+    private val TIME_LABEL = Regex("\\d{1,2}:\\d{2}\\s*-\\s*\\d{1,2}:\\d{2}")
 }
 
 /**

@@ -46,6 +46,35 @@ class TimetableStoreTest {
         assertEquals(WeekParity.ODD, TimetableStore(storage).load()!!.courses.single().parity)
     }
 
+    @Test fun thePeriodClocksSurviveTheRoundTrip() {
+        val storage = MemoryStorage()
+        val clocks = listOf("08:30-09:10", "09:15-09:55", "", "14:00-14:40")
+        TimetableStore(storage).save(Timetable("2025-2026学年第一学期", listOf(course()), 1_700_000_000_000L, clocks))
+        val loaded = TimetableStore(storage).load()!!
+        assertEquals(clocks, loaded.periodTimes)
+        assertEquals("08:30-09:10", loaded.periodTime(1))
+        assertEquals("14:00-14:40", loaded.periodTime(4))
+        // A position the source left blank stays blank rather than shifting the ones after it.
+        assertNull(loaded.periodTime(3))
+    }
+
+    /**
+     * 节次 clocks were added as an optional key rather than a schema bump, so a timetable saved by
+     * an earlier build — every user who already had one — still loads instead of being thrown away.
+     */
+    @Test fun aPayloadSavedBeforeTheClocksExistedStillLoads() {
+        val storage = MemoryStorage()
+        TimetableStore(storage).save(timetable(course(name = "旧版课表-fixture")))
+        assertTrue("fixture must carry the clocks for this test to mean anything", storage.value!!.contains("periods"))
+        storage.value = storage.value!!.replace(Regex(",\"periods\":\\[[^\\]]*\\]"), "")
+        assertFalse(storage.value!!.contains("periods"))
+
+        val loaded = TimetableStore(storage).load()!!
+        assertEquals("旧版课表-fixture", loaded.courses.single().name)
+        assertEquals(emptyList<String>(), loaded.periodTimes)
+        assertNull(loaded.periodTime(1))
+    }
+
     @Test fun savingAgainReplacesTheEarlierTimetable() {
         val storage = MemoryStorage()
         val store = TimetableStore(storage)

@@ -94,6 +94,10 @@ internal object TimetableJson {
             addProperty("term", timetable.term)
             addProperty("recognized_at", timetable.recognizedAtMillis)
             add("courses", courses)
+            // The 节次 column's clock labels, one per period. It is an added optional key rather than
+            // a schema bump: a payload written before it existed still decodes, and one written with
+            // it still decodes on a build that ignores it.
+            add("periods", JsonArray().apply { timetable.periodTimes.forEach { add(it) } })
         }.toString()
     }
 
@@ -124,9 +128,15 @@ internal object TimetableJson {
             )
         }
         return try {
-            TimetableValidator.build(text(root, "term"), entries, recognizedAt(root))
+            TimetableValidator.build(text(root, "term"), entries, recognizedAt(root), periodTimes(root))
         } catch (_: TimetableException) { null }
     }
+
+    /** The stored clock labels; a payload written before they existed simply has none. */
+    private fun periodTimes(root: JsonObject): List<String> =
+        root.get("periods")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull { element ->
+            element.takeIf { it.isJsonPrimitive }?.asString
+        }.orEmpty()
 
     private fun text(value: JsonObject, key: String): String? =
         value.get(key)?.takeIf { it.isJsonPrimitive }?.asString

@@ -411,7 +411,9 @@ class TimetableController internal constructor(
     private fun rebuild(drafts: List<TimetableCourseDraft>, savedMessage: String) {
         val timetable = mutableState.value.timetable ?: return
         val rebuilt = try {
-            TimetableValidator.build(timetable.term, drafts, timetable.recognizedAtMillis)
+            // The 节次 clocks survive an edit: they belong to the timetable, not to the course being
+            // changed, and dropping them here would silently empty the grid gutter.
+            TimetableValidator.build(timetable.term, drafts, timetable.recognizedAtMillis, timetable.periodTimes)
         } catch (refusal: TimetableException) {
             publishEdit(editRefusal(refusal))
             return

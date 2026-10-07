@@ -462,6 +462,7 @@ fun TimetableScreen(
         CourseDetailSheet(
             course = course,
             week = state.selectedWeek,
+            timeSpan = timetable?.timeSpanOf(course),
             tint = tintFor(LocalCampusPalette.current, course, timetable),
             onDismiss = { detail = null },
             onEdit = {
@@ -712,6 +713,7 @@ private fun TodayCard(
                     courses.forEachIndexed { index, course ->
                         TodayCourseRow(
                             course = course,
+                            time = timetable.timeSpanOf(course),
                             tint = tintAt(palette, slots[course] ?: 0),
                             onClick = { onCourse(course) }
                         )
@@ -726,7 +728,7 @@ private fun TodayCard(
 }
 
 @Composable
-private fun TodayCourseRow(course: TimetableCourse, tint: CourseTint, onClick: () -> Unit) {
+private fun TodayCourseRow(course: TimetableCourse, time: String?, tint: CourseTint, onClick: () -> Unit) {
     val palette = LocalCampusPalette.current
     Row(
         Modifier.fillMaxWidth()
@@ -759,7 +761,7 @@ private fun TodayCourseRow(course: TimetableCourse, tint: CourseTint, onClick: (
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                course.detailLabel.ifBlank { "教师、教室未填写" },
+                listOfNotNull(course.detailLabel.ifBlank { "教师、教室未填写" }, time).joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall,
                 color = palette.textTertiary,
                 maxLines = 1,
@@ -866,7 +868,10 @@ private fun WeekGridCard(
                                                 Modifier.fillMaxWidth().height(GridCellHeight),
                                                 contentAlignment = Alignment.Center
                                             ) {
-                                                PeriodGutterLabel(period)
+                                                PeriodGutterLabel(
+                                                    period,
+                                                    timetable.periodTime(period)?.substringBefore('-')
+                                                )
                                             }
                                         }
                                     }
@@ -891,18 +896,37 @@ private fun WeekGridCard(
     }
 }
 
-/** The 节次 gutter label: the number of the row beside it, in a gutter this narrow. */
+/**
+ * The 节次 gutter label: the row's number, and under it the clock that row starts at when the
+ * source stated one. A printed 课表 states both in this column, so the import carries the clock;
+ * a photo read has no clocks and the gutter stays as it was.
+ */
 @Composable
-private fun PeriodGutterLabel(period: Int) {
+private fun PeriodGutterLabel(period: Int, startClock: String?) {
     val palette = LocalCampusPalette.current
-    Text(
-        gutterPeriodLabel(period),
-        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, lineHeight = 14.sp),
-        color = palette.textTertiary,
-        textAlign = TextAlign.Center,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis
-    )
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            gutterPeriodLabel(period),
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, lineHeight = 13.sp),
+            color = palette.textTertiary,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (startClock != null) {
+            Text(
+                startClock,
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, lineHeight = 11.sp),
+                color = palette.textTertiary.copy(alpha = 0.8f),
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
 }
 
 @Composable
@@ -1843,6 +1867,8 @@ private fun courseFieldColors(): TextFieldColors {
 private fun CourseDetailSheet(
     course: TimetableCourse,
     week: Int,
+    /** `14:00-16:15`, or null when the source stated no clocks — a photo read never carries them. */
+    timeSpan: String?,
     tint: CourseTint,
     onDismiss: () -> Unit,
     onEdit: () -> Unit
@@ -1886,7 +1912,10 @@ private fun CourseDetailSheet(
                 )
             }
             Column {
-                DetailRow("上课时间", "${course.weekdayLabel} ${course.periodLabel}")
+                DetailRow(
+                    "上课时间",
+                    listOfNotNull("${course.weekdayLabel} ${course.periodLabel}", timeSpan).joinToString(" · ")
+                )
                 DetailRow("上课周次", course.weekLabel.trim())
                 DetailRow("单双周", parityLabel(course.parity))
                 DetailRow("任课教师", course.teacher.ifBlank { "未填写" })
