@@ -25,7 +25,7 @@ internal interface TimetableStorage {
     fun removeTermStart()
 }
 
-/** The timetable is not a secret, so unlike [VisionApiKeyStore] it needs no cipher. */
+/** The timetable is not a secret — it is the same list the school shows anyone who logs in. */
 class TimetableStore internal constructor(private val storage: TimetableStorage) {
     constructor(context: Context) : this(AndroidTimetableStorage(context))
 

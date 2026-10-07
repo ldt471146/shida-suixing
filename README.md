@@ -25,7 +25,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\preview-android.ps
 
 预览脚本检测指定设备，自动启动模拟器窗口并用 `adb install -r` 更新，保存的设置随更新保留。可用 `-State ONLINE`、`AUTH_ERROR`、`NO_WIFI` 等查看不同界面。`-Preview` 仅在 Debug APK 生效，使用独立内存控制器，不初始化凭据存储或校园认证模块；界面始终显示预览标识。
 
-APK 输出：`app/build/outputs/apk/release/app-release.apk`，本轮版本 0.6.1 / versionCode 13，可覆盖安装。正式分发走 GitHub Releases，见下节。
+APK 输出：`app/build/outputs/apk/release/app-release.apk`，本轮版本 0.7.0 / versionCode 14，可覆盖安装。正式分发走 GitHub Releases，见下节。
 
 ## 更新与分发
 
@@ -44,7 +44,7 @@ git push origin v0.6.0
 
 推送 `v*` 标签后 [发布工作流](.github/workflows/android-release.yml) 在 runner 上构建签名 APK，并发布 `shida-suixing-<版本>.apk` 与 `version.json`。应用读取 `version.json` 的 `versionCode` 判断是否需要更新。
 
-当前已发布：`v0.4.0`（versionCode 7）、`v0.4.1`（versionCode 8）、`v0.4.2`（versionCode 9）、`v0.5.0`（10）、`v0.6.0`（12）。`0.6.1`（13）为当前版本。
+当前已发布：`v0.4.0`（versionCode 7）、`v0.4.1`（8）、`v0.4.2`（9）、`v0.5.0`（10）、`v0.6.0`（12）、`v0.6.1`（13）。`0.7.0`（14）为当前版本。
 
 签名密钥在仓库之外（`D:\gxsf-signing\release.jks`），通过仓库 Secrets 提供给 CI，不进入版本库。**请另行备份该密钥和口令**：丢失后已安装的旧版本无法再被覆盖更新。
 
@@ -52,20 +52,21 @@ git push origin v0.6.0
 
 ## 课表
 
-「服务 → 课表」有两条路，**导入教务系统导出的 Word 课表是主入口**（不需要相机、网络和 Key）：
+「服务 → 课表」**直接登录研究生系统把课表取回来**：填学号和密码，应用用它们换一枚 token，再从 `/xskb/xh` 取回这个学期的课表并存在本机。不需要拍照、不需要导出 Word、不需要识别服务。
 
-- **导入 Word**：直接选教务系统导出的 `.doc` / `.docx`，读出课程名、教师、周次与节次跨度
-- **拍照识别**：选图或拍照后由 AI 识图生成周课表
+- **登录一次就够**：勾选「记住本机」后账号加密保存在 Android Keystore 里，之后每次打开应用自动续登并刷新；不勾选则只用于本次会话
 - 按周查看，设置开学日期后自动定位当前周；未设置时按第 1 周显示
 - 单双周、上课周次范围都会参与筛选，互斥的课程不会同时出现
 - 周课表网格按课程着色，周末与空节自动收起，点任意课程查看教师与地点
-- **每节课是几点**：导入的课表带着打印稿「节次」那一栏的时间（`08:30-09:10`），显示在网格左侧节次栏、今日课程行与课程详情的「上课时间」里；课程跨多节时显示成一段（`14:00-17:00`）。照片识别读不出时间，那一栏就只显示节次号
-- **课表可以自己改**：课程详情进编辑面板，字段含课程名、教师、**上课地点**、星期、起止节次、起止周与单双周；管理卡片可手动新增或删除课程。教务系统打印的课表不写上课地点，补地点就靠这里
-- 课表只存在本机，可重新导入、重新识别或删除
+- **每节课是几点**：系统给了每节课的上下课时间，显示在网格左侧节次栏、今日课程行与课程详情的「上课时间」里；课程跨多节时显示成一段（`14:00-17:00`）
+- **课表可以自己改**：课程详情进编辑面板，字段含课程名、教师、**上课地点**、星期、起止节次、起止周与单双周；管理卡片可手动新增或删除课程。系统里的课表不写上课地点，补地点就靠这里
+- 课表取回后只存在本机，可随时更新或删除；「退出登录」只忘掉账号，不会删掉已经取回的课表
 
-导入时**不会有第 0 节**：打印稿最上面那行「无节次」（学校给还没排时间的课留的行）整行不导入，被略过的门数会明说。
+系统里那行「无节次」（学校给还没排时间的课留的行）**不导入** —— 课表里不存在第 0 节，节次从第 1 节开始。
 
-识别端点已内置进构建，正常使用无需填写 Key。Key 通过 `local.properties` 的 `vision.baseUrl` / `vision.apiKey` 在构建时注入，`local.properties` 已被忽略。Word 导入不联网、不用 Key。实现见[课表导入 Word](docs/design/word-import.md) 与[课表识别](docs/design/timetable-vision.md)。
+接口是从系统自己的前端里读出来的，不是猜的：`POST /SmartGmis5_0/login`（密码是系统自己用的那种小写十六进制 MD5）换 token，`GET /SmartGmis5_0/xskb/xh` 带上 `GmisToken` 头取课表。实机验证与字段含义见 [CampusTimetableApi.kt](app/src/main/java/cn/gxnu/campus/core/CampusTimetableApi.kt)。
+
+> 0.7.0 之前的课表走的是「拍照识别」和「导入 Word」，两条路都已移除；历史实现见 git 记录里的 `docs/design/timetable-vision.md`。
 
 ## 在手机使用
 
@@ -89,7 +90,7 @@ powershell -NoProfile -File .\scripts\check-android.ps1 -Task lintDebug
 powershell -NoProfile -File .\scripts\check-android.ps1 -Task assembleRelease
 ```
 
-当前 441 个单元测试通过，`lintDebug` 无错误。发布构建需要 `local.properties` 里的 `signing.*`；缺失时回退到 debug 签名，产物不可分发。CI 的签名材料来自仓库 Secrets。
+当前 300 个单元测试通过，`lintDebug` 无错误。发布构建需要 `local.properties` 里的 `signing.*`；缺失时回退到 debug 签名，产物不可分发。CI 的签名材料来自仓库 Secrets。
 
 协议和协调器测试使用虚构数据，覆盖运营商、编码、JSONP 数据解析、重复操作、换网与账号变更、失败状态。账号密码不进入日志或源码，界面不拼接带凭据的 URL。官方适配器通过 `Network.openConnection` 绑定目标 Wi-Fi，保留系统 TLS 证书校验。
 
@@ -105,6 +106,17 @@ powershell -NoProfile -File .\scripts\check-android.ps1 -Task assembleRelease
 
 0.6.1 补上「每节课是几点」。打印稿的「节次」那一栏本来就有时间（`08:30-09:10`），导入时顺便读进来，存进课表并显示在**网格左侧节次栏**（节次号下面一行小字）、**今日课程行**和**课程详情的「上课时间」**；一门课跨多节时显示成一段，例如周一第 6-9 节是 `14:00-17:00`。时间是课表的属性而不是课程的属性 —— 一个时间段属于一节，所以它跟课表一起存，编辑某门课时不会被抹掉。存储用的是新增的可选字段而不是升 schema 版本，**升级前已经存在本机的那份课表照常读取**，不会因为这次更新被清掉。照片识别读不出时间（模型给的是「上午1」这类行标签），那条路径上节次栏保持原样。
 
-课表识别走内置端点，默认模型 `glm-5v-turbo`，可在课表页的高级设置里改端点、模型或填自己的 Key。只有课表图片会发往识别服务，校园网账号密码不参与。识别结果依赖模型输出；正确性以实际课表为准。
+0.7.0 把课表的来源整个换掉：**不再拍照识别、不再导入 Word，改成直接登录研究生系统把课表取回来**。前两条路都被删掉了（连同它们的读取器、视觉客户端、API Key 那一套和全部相关测试），换成一个登录卡片：学号 + 密码换一枚 token，再取 `/xskb/xh`。
 
-新版实际画面及操作记录：[模拟器检查](docs/design/emulator-verification.md)、[当前浅色首页](docs/design/screenshots/v5-home-light.png)。更新链路的实现与边界见[应用内更新](docs/design/app-update.md)，课表导入的实现、真值与已知边界见[课表导入 Word](docs/design/word-import.md)，课表识别（含分辨率与模型选择的实测数据）见[课表识别](docs/design/timetable-vision.md)。真实校园网登录与手机后台重连尚未完成实测，预览结果仅用于界面检查。更新流程的下载与系统安装确认需在实体手机验证。
+接口是从系统自己的前端里读出来的，不是猜的：密码是系统自己发的那种**小写十六进制 MD5**，认证头是 **`GmisToken`**（用 `Authorization` 会被 401 挡掉），课表的节次取 `ksjcmc`/`jsjcmc` 末尾的数字而不是 `ksjc`/`jsjc`（后者在这份系统里不是节次号 —— 同一节里出现过 42/46/47/52/53/58，与任何节次编号都对不上）。实机抓包的真实响应存成了测试 fixture，字段读错就会红。
+
+- **登录一次就够**：勾「记住本机」后账号进 Android Keystore 加密的保险箱，之后每次打开自动续登并刷新；不勾选就只用于本次会话。token 只在内存里，不落盘
+- **`signingIn` 不会被异常卡住**：这个 scope 上没有异常处理器，所以除取消外的任何异常都收敛成一次失败 —— 否则页面会永远停在「正在登录」（这条有回归用例）
+- 课表行的映射回到**同一条** `TimetableValidator`：手工改课表和从系统取回来的是同一套校验，没有第二套规则
+- 「无节次」那行（`ksjc == 99`，学校给还没排时间的课留的）**不导入**，所以课表里没有第 0 节
+- 单双周来自系统的 `3-17周[单周]` 这类字段，原样保留
+- 每节课的上下课时间进节次栏与课程详情；编辑某门课不会把时间抹掉（时间是课表的属性，不是课程的）
+
+**升级说明**：这一版换掉了课表的来源，但**已经存在本机的那份课表仍然能读**（存储格式没变，只删了写入方）。
+
+新版实际画面及操作记录：[模拟器检查](docs/design/emulator-verification.md)、[当前浅色首页](docs/design/screenshots/v5-home-light.png)。更新链路的实现与边界见[应用内更新](docs/design/app-update.md)。真实校园网登录与手机后台重连尚未完成实测，预览结果仅用于界面检查。更新流程的下载与系统安装确认需在实体手机验证。

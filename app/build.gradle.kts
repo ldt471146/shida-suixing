@@ -6,15 +6,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// Local, gitignored configuration: the release signing material and the built-in recognition
-// endpoint. The keystore lives outside this repository, and local.properties is ignored, so a
-// published tree never carries either one.
+// Local, gitignored configuration: the release signing material. The keystore lives outside this
+// repository, and local.properties is ignored, so a published tree never carries it.
 val localProperties = Properties().apply {
     val file = rootProject.file("local.properties")
     if (file.exists()) file.inputStream().use { load(it) }
 }
-val visionBaseUrl: String = localProperties.getProperty("vision.baseUrl").orEmpty()
-val visionApiKey: String = localProperties.getProperty("vision.apiKey").orEmpty()
 val signingStoreFile: String? = localProperties.getProperty("signing.storeFile")
     ?.takeIf { it.isNotBlank() && rootProject.file(it).exists() }
 
@@ -26,13 +23,8 @@ android {
         applicationId = "cn.gxnu.campus"
         minSdk = 26
         targetSdk = 34
-        versionCode = 13
-        versionName = "0.6.1"
-
-        // Recognition endpoint compiled into the build so the shipped app needs no key entry.
-        // Blank values drop the app back to the manual API-key screen.
-        buildConfigField("String", "VISION_BASE_URL", "\"$visionBaseUrl\"")
-        buildConfigField("String", "VISION_API_KEY", "\"$visionApiKey\"")
+        versionCode = 14
+        versionName = "0.7.0"
     }
 
     signingConfigs {

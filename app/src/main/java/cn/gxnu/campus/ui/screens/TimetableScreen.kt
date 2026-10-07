@@ -1,15 +1,6 @@
 package cn.gxnu.campus.ui.screens
 
-import android.content.Context
-import android.graphics.Bitmap
-import android.net.Uri
-import android.os.Build
-import android.provider.OpenableColumns
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -41,25 +32,19 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.Key
-import androidx.compose.material.icons.outlined.PhotoCamera
-import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.Place
-import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Today
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
-import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -70,7 +55,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -87,7 +71,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -96,11 +79,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -127,8 +107,6 @@ import cn.gxnu.campus.core.TimetableCourseSlots
 import cn.gxnu.campus.core.TimetableDay
 import cn.gxnu.campus.core.TimetableGridLayout
 import cn.gxnu.campus.core.WeekParity
-import cn.gxnu.campus.core.WordDocuments
-import cn.gxnu.campus.network.TimetableVisionFailure
 import cn.gxnu.campus.ui.TimetableActions
 import cn.gxnu.campus.ui.TimetableUiState
 import cn.gxnu.campus.ui.common.CampusCard
@@ -136,18 +114,14 @@ import cn.gxnu.campus.ui.common.CampusIconPlate
 import cn.gxnu.campus.ui.common.CampusPageHeader
 import cn.gxnu.campus.ui.common.CampusPill
 import cn.gxnu.campus.ui.common.CampusPrimaryButton
+import cn.gxnu.campus.ui.common.CampusSwitch
 import cn.gxnu.campus.ui.common.SectionLabel
 import cn.gxnu.campus.ui.theme.CampusPalette
 import cn.gxnu.campus.ui.theme.CampusRadius
 import cn.gxnu.campus.ui.theme.CampusSpace
 import cn.gxnu.campus.ui.theme.LocalCampusPalette
-import java.io.ByteArrayOutputStream
-import java.io.InputStream
 import java.time.LocalDate
 import java.time.ZoneOffset
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 private val GridCellHeight = 66.dp
 private val GridCellGap = 3.dp
@@ -176,9 +150,6 @@ private val GridScrollFadeWidth = 20.dp
 // A cell is a fixed 66dp tall, so a name past ~1.3x would grow out of its row and overlap the next
 // one. Only the grid caps its own text scale; the rest of the screen keeps the system setting.
 private const val GridMaxFontScale = 1.3f
-// The preview keeps the photo's own shape and only caps its height, so a tall frame cannot push the
-// rest of the page away while a wide one is still shown whole.
-private val PreviewImageMaxHeight = 320.dp
 // Label columns are stated in sp rather than dp so they grow with the font scale instead of
 // ellipsising a real value ("11-12", "上课时间") once the user turns the text size up. Every row of a
 // list shares one width, so the column beside it stays aligned from row to row. The 今日 period
@@ -187,9 +158,8 @@ private val TodayPeriodColumnWidth = 56.sp
 private val DetailLabelColumnWidth = 72.sp
 
 /**
- * 课表: pick or shoot a timetable photo, recognise it through the vision service, then read it back
- * as a teaching-week grid. Stateless apart from the picker plumbing and the transient sheets, so the
- * host owns all the state that matters.
+ * 课表: 登录研究生系统，把课表取回本机，再按教学周读它。 Stateless apart from the login form and the
+ * transient sheets, so the host owns all the state that matters.
  */
 @Composable
 fun TimetableScreen(
@@ -197,102 +167,37 @@ fun TimetableScreen(
     actions: TimetableActions,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    // The key draft stays out of saved state on purpose: it is a secret, not form data to restore.
-    var keyDraft by remember { mutableStateOf("") }
-    var keyVisible by remember { mutableStateOf(false) }
-    var preparing by remember { mutableStateOf(false) }
-    // The picked file is read off the main thread, and the controller parses it after that, so the
-    // page is busy from the tap in the file manager until the imported courses are on screen.
-    var readingFile by remember { mutableStateOf(false) }
-    var preview by remember { mutableStateOf<Bitmap?>(null) }
-    var notice by remember { mutableStateOf<String?>(null) }
+    // The password stays out of saved state on purpose: it is a secret, not form data to restore, and
+    // the controller never hands it back — this is only what was typed in this composition.
+    var passwordDraft by remember { mutableStateOf("") }
+    // Null until the user types: the field shows the account this device remembers until then.
+    var accountDraft by remember { mutableStateOf<String?>(null) }
+    var rememberAccount by remember { mutableStateOf(true) }
+    var accountMissing by remember { mutableStateOf(false) }
+    var passwordMissing by remember { mutableStateOf(false) }
+    // 退出登录 之后总要留一条回到登录卡的路，否则换一个学号就只能靠重开应用。
+    var loginRequested by remember { mutableStateOf(false) }
     var confirmingDelete by remember { mutableStateOf(false) }
     var settingTermStart by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf<TimetableCourse?>(null) }
     var editor by remember { mutableStateOf<CourseEditorRequest?>(null) }
-    var captureTarget by remember { mutableStateOf<Uri?>(null) }
 
-    fun load(uri: Uri, discardAfterwards: Boolean) {
-        if (preparing) return
-        preparing = true
-        notice = null
-        scope.launch {
-            when (val result = loadPreparedImage(context, uri, discardAfterwards)) {
-                is ImageLoad.Ready -> {
-                    preview = result.prepared.preview
-                    actions.useImage(result.prepared.image)
-                }
-                is ImageLoad.Failed -> notice = result.message
-            }
-            preparing = false
-        }
-    }
-
-    fun importWord(uri: Uri) {
-        if (readingFile) return
-        readingFile = true
-        notice = null
-        scope.launch {
-            when (val pick = readWordPick(context, uri)) {
-                is WordPick.Ready -> actions.importWord(pick.fileName, pick.bytes)
-                is WordPick.Failed -> notice = pick.message
-            }
-            readingFile = false
-        }
-    }
-
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) load(uri, discardAfterwards = false) else notice = "没有选择图片。"
-    }
-    val wordPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) importWord(uri) else notice = "没有选择文件。"
-    }
-    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { captured ->
-        val target = captureTarget
-        captureTarget = null
-        if (captured && target != null) load(target, discardAfterwards = true)
-        else {
-            target?.let { TimetableImageLoader.discardCaptureTarget(context, it) }
-            notice = "已取消拍照。"
-        }
-    }
-
+    val account = accountDraft ?: state.rememberedAccount
     val timetable = state.timetable
-    val message = state.message ?: notice
-    val importing = readingFile || state.importing
-    val busy = preparing || state.recognizing || importing
-    val captureSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+    val notice = state.message?.takeIf { it.isNotBlank() }
     // 今日 is only claimed when the grid is genuinely showing the week today falls in.
     val showingCurrentWeek = state.termStartEpochDay != null && state.selectedWeek == state.currentWeek
+    // A signed-out session keeps its 课表 on screen, so the login card only takes the slot over when
+    // there is nothing to show or the user asked for it from 课表管理.
+    val showLogin = state.account.isBlank() && (timetable == null || loginRequested)
 
-    fun shoot() {
-        val target = TimetableImageLoader.createCaptureTarget(context)
-        if (target == null) {
-            notice = "无法创建拍照任务，请改用相册里的照片。"
-        } else {
-            captureTarget = target
-            try {
-                camera.launch(target)
-            } catch (_: Exception) {
-                captureTarget = null
-                TimetableImageLoader.discardCaptureTarget(context, target)
-                notice = "这台设备没有可用的相机应用。"
-            }
-        }
-    }
-
-    fun pickImage() {
-        picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-    }
-
-    fun pickWordFile() {
-        try {
-            wordPicker.launch(WordImportFiles.MIME_TYPES)
-        } catch (_: Exception) {
-            notice = "这台设备没有可用的文件管理器，请先安装一个再导入课表。"
-        }
+    fun signIn() {
+        val userId = account.trim()
+        accountMissing = userId.isEmpty()
+        passwordMissing = passwordDraft.isEmpty()
+        if (accountMissing || passwordMissing) return
+        loginRequested = false
+        actions.signIn(userId, passwordDraft, rememberAccount)
     }
 
     LazyColumn(
@@ -308,102 +213,59 @@ fun TimetableScreen(
         item {
             CampusPageHeader(
                 title = "课表",
-                subtitle = if (timetable == null) "导入教务系统的 Word 课表，或拍照识别"
+                subtitle = if (timetable == null) "登录研究生系统，把课表取回本机"
                 else "共 ${timetable.courseCount} 门课程 · 更新于 ${formatDate(timetable.recognizedAtMillis)}"
             )
         }
-        state.failure?.let { failure ->
+        if (notice != null) {
             item {
-                FailureCard(
-                    failure = failure,
-                    message = state.message,
-                    canRetry = state.canRetry,
-                    busy = busy,
-                    onRetry = actions::retry,
-                    onPickAnother = ::pickImage
-                )
-            }
-        }
-        // A failure is already spelled out by its own card; repeating it here would double it up.
-        if (state.failure == null && !message.isNullOrBlank()) {
-            item {
-                NoticeRow(message) {
-                    notice = null
-                    actions.clearMessage(state.messageId)
-                }
-            }
-        }
-        // Once a timetable is on screen the photo has done its job, so it stops taking up the top of
-        // the page. It stays visible while a recognition runs, before the first success, and after a
-        // failure — the three moments when seeing which image was sent actually matters. A running
-        // recognition keeps the card even when this composition holds no decoded bitmap (a rotation
-        // drops the one above): the card is where 取消 lives, and a page that is waiting on a
-        // 40-90 second request must never be left with no way out of it.
-        val showPreview = state.recognizing ||
-            (preview != null && (preparing || timetable == null || state.failure != null))
-        if (showPreview) {
-            item {
-                PreviewCard(
-                    preview = preview,
-                    preparing = preparing,
-                    recognizing = state.recognizing,
-                    failed = state.failure != null,
-                    onCancel = actions::cancelRecognition
-                )
-            }
-        }
-        if (!state.builtInKey) {
-            item {
-                ApiKeyCard(
-                    keyConfigured = state.keyConfigured,
-                    keyHint = state.keyHint,
-                    draft = keyDraft,
-                    onDraftChange = { keyDraft = it },
-                    visible = keyVisible,
-                    onVisibleChange = { keyVisible = it },
-                    onSave = {
-                        actions.saveApiKey(keyDraft)
-                        keyDraft = ""
-                    },
-                    onClear = actions::clearApiKey
-                )
+                NoticeRow(notice) { actions.clearMessage(state.messageId) }
             }
         }
         item {
             when {
                 state.restoring -> LoadingCard()
-                timetable == null -> EmptyTimetableCard(
-                    onImportWord = ::pickWordFile,
-                    onPick = ::pickImage,
-                    onShoot = if (captureSupported) ::shoot else null,
-                    busy = busy,
-                    importing = importing
+                showLogin -> LoginCard(
+                    account = account,
+                    password = passwordDraft,
+                    onAccountChange = {
+                        accountDraft = it
+                        accountMissing = false
+                    },
+                    onPasswordChange = {
+                        passwordDraft = it
+                        passwordMissing = false
+                    },
+                    remember = rememberAccount,
+                    onRememberChange = { rememberAccount = it },
+                    accountMissing = accountMissing,
+                    passwordMissing = passwordMissing,
+                    signingIn = state.signingIn,
+                    onSubmit = { signIn() }
                 )
-                else -> TimetableSection(
+                timetable != null -> TimetableSection(
                     state = state,
                     timetable = timetable,
                     showingCurrentWeek = showingCurrentWeek,
-                    busy = busy,
+                    busy = state.signingIn,
                     onSelectWeek = actions::selectWeek,
                     onCurrentWeek = actions::showCurrentWeek,
                     onSetTermStart = { settingTermStart = true },
                     onCourse = { detail = it }
                 )
+                else -> NoTimetableCard(signingIn = state.signingIn, onRefresh = actions::refresh)
             }
         }
-        // The empty state owns its own import actions, so this card only appears once a timetable
-        // exists — otherwise the same two buttons would be offered twice on one screen.
+        // 课表管理 only earns its place once a timetable is on screen: before that the login card
+        // owns the page and already carries the one action that matters.
         if (timetable != null) {
             item {
                 ManageCard(
-                    hasPreview = state.canRetry,
-                    busy = busy,
-                    importing = importing,
-                    captureSupported = captureSupported,
-                    onImportWord = ::pickWordFile,
-                    onPick = ::pickImage,
-                    onShoot = ::shoot,
-                    onRetry = actions::retry,
+                    account = state.account,
+                    signingIn = state.signingIn,
+                    onRefresh = actions::refresh,
+                    onSignIn = { loginRequested = true },
+                    onSignOut = actions::signOut,
                     onDelete = { confirmingDelete = true },
                     onAddCourse = { editor = CourseEditorRequest(index = null, course = null) }
                 )
@@ -420,7 +282,7 @@ fun TimetableScreen(
             title = { Text("删除本机课表？", style = MaterialTheme.typography.titleLarge, color = palette.textPrimary) },
             text = {
                 Text(
-                    "只会删除这台手机上保存的课表，开学日期会保留。图片不会上传到别处。",
+                    "只会删除这台手机上保存的课表，开学日期会保留；研究生系统里的课表不受影响。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = palette.textSecondary
                 )
@@ -428,7 +290,6 @@ fun TimetableScreen(
             confirmButton = {
                 TextButton(onClick = {
                     confirmingDelete = false
-                    preview = null
                     actions.deleteTimetable()
                 }) { Text("删除", color = palette.danger, style = MaterialTheme.typography.labelLarge) }
             },
@@ -898,8 +759,8 @@ private fun WeekGridCard(
 
 /**
  * The 节次 gutter label: the row's number, and under it the clock that row starts at when the
- * source stated one. A printed 课表 states both in this column, so the import carries the clock;
- * a photo read has no clocks and the gutter stays as it was.
+ * source stated one. A printed 课表 states both in this column, so the fetch carries the clock;
+ * a timetable that states no clocks leaves the gutter as it was.
  */
 @Composable
 private fun PeriodGutterLabel(period: Int, startClock: String?) {
@@ -1100,84 +961,33 @@ private fun CourseCell(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Import, key and state cards
+// Login and state cards
 // ---------------------------------------------------------------------------------------------
 
+/** 登录研究生系统: 学号 + 密码换一枚 token，课表从研究生系统直接取回本机。 */
 @Composable
-private fun PreviewCard(
-    preview: Bitmap?,
-    preparing: Boolean,
-    recognizing: Boolean,
-    failed: Boolean,
-    onCancel: () -> Unit
+private fun LoginCard(
+    account: String,
+    password: String,
+    onAccountChange: (String) -> Unit,
+    onPasswordChange: (String) -> Unit,
+    remember: Boolean,
+    onRememberChange: (Boolean) -> Unit,
+    accountMissing: Boolean,
+    passwordMissing: Boolean,
+    signingIn: Boolean,
+    onSubmit: () -> Unit
 ) {
     val palette = LocalCampusPalette.current
-    CampusCard {
-        Column(Modifier.padding(CampusSpace.lg), verticalArrangement = Arrangement.spacedBy(CampusSpace.md)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SectionLabel("待识别的图片")
-                Spacer(Modifier.weight(1f))
-                when {
-                    preparing -> CampusPill("正在压缩", palette.textSecondary, palette.muted)
-                    recognizing -> CampusPill("识别中", palette.onAccentWash, palette.accentWash)
-                    // The pill follows the last attempt, so a failed read never claims to have worked.
-                    failed -> CampusPill("这张没有识别成功", palette.danger, palette.dangerWash)
-                    else -> CampusPill("已识别", palette.success, palette.successWash)
-                }
-            }
-            preview?.let { bitmap ->
-                val image = remember(bitmap) { bitmap.asImageBitmap() }
-                // A timetable photo is usually wider than tall, so cropping it into a 160dp strip
-                // hid the very thing this card exists to show: which image was actually sent. The
-                // box now takes the photo's own shape, capped so a tall frame cannot push the rest
-                // of the page down, and Fit keeps the whole frame visible either way.
-                BoxWithConstraints(Modifier.fillMaxWidth()) {
-                    val height = if (bitmap.width > 0 && bitmap.height > 0) {
-                        (maxWidth / (bitmap.width.toFloat() / bitmap.height)).coerceAtMost(PreviewImageMaxHeight)
-                    } else {
-                        PreviewImageMaxHeight
-                    }
-                    Image(
-                        bitmap = image,
-                        contentDescription = null,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxWidth().height(height)
-                            .background(palette.muted, CampusRadius.mdShape)
-                    )
-                }
-            }
-            if (preparing || recognizing) {
-                Column(verticalArrangement = Arrangement.spacedBy(CampusSpace.sm)) {
-                    LinearProgressIndicator(
-                        modifier = Modifier.fillMaxWidth().height(3.dp),
-                        color = palette.accent,
-                        trackColor = palette.muted
-                    )
-                    Text(
-                        if (preparing) "正在压缩图片…" else "正在识别课表，通常需要几秒到十几秒。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = palette.textSecondary
-                    )
-                }
-            }
-            // A recognition can run for a minute or more. The cancel action sits with the progress it
-            // stops, not in 课表管理, because the wait is what the user is looking at.
-            if (recognizing) {
-                OutlinedActionButton("取消", Icons.Outlined.Close, onCancel, Modifier.fillMaxWidth())
-            }
-        }
-    }
-}
-
-@Composable
-private fun EmptyTimetableCard(
-    onImportWord: () -> Unit,
-    onPick: () -> Unit,
-    onShoot: (() -> Unit)?,
-    busy: Boolean,
-    importing: Boolean
-) {
-    val palette = LocalCampusPalette.current
+    // The password field's own state, so toggling it never restarts the form around it.
+    var passwordVisible by remember { mutableStateOf(false) }
+    val passwordTransformation = remember { PasswordVisualTransformation() }
+    val accountError: (@Composable () -> Unit)? = if (accountMissing) ({
+        Text("请输入学号。", style = MaterialTheme.typography.bodySmall)
+    }) else null
+    val passwordError: (@Composable () -> Unit)? = if (passwordMissing) ({
+        Text("请输入密码。", style = MaterialTheme.typography.bodySmall)
+    }) else null
     CampusCard {
         Column(Modifier.padding(CampusSpace.lg), verticalArrangement = Arrangement.spacedBy(CampusSpace.lg)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1185,49 +995,108 @@ private fun EmptyTimetableCard(
                 Spacer(Modifier.width(CampusSpace.md))
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
-                        "还没有课表",
+                        "登录研究生系统",
                         style = MaterialTheme.typography.titleMedium,
                         color = palette.textPrimary,
                         modifier = Modifier.semantics { heading() }
                     )
                     Text(
-                        "导入教务系统导出的 Word 课表，或拍一张照片识别",
+                        "课表从研究生系统直接取回，需要连上校园网。",
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.textTertiary
                     )
                 }
             }
-            Column(verticalArrangement = Arrangement.spacedBy(CampusSpace.sm)) {
-                HintLine("教务系统导出的 .doc / .docx 课表可以直接导入，导入后能按周查看。")
-                HintLine("也可以拍一张课程表照片识别；照片越清晰、越正对，识别越准确。")
-                HintLine("导入和识别的结果都只保存在这台手机上，可以随时修改或删除。")
-            }
-            // 导入 Word 是这份课表本来的出处，也是唯一不需要网络和 API Key 的入口，所以它是主按钮。
-            CampusPrimaryButton(
-                title = if (importing) "正在导入…" else "导入 Word 课表",
-                onClick = onImportWord,
-                enabled = !busy,
-                busy = importing
+            OutlinedTextField(
+                value = account,
+                onValueChange = onAccountChange,
+                enabled = !signingIn,
+                label = { Text("学号") },
+                placeholder = { Text("输入研究生系统学号") },
+                supportingText = accountError,
+                isError = accountMissing,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
+                colors = courseFieldColors(),
+                modifier = Modifier.fillMaxWidth()
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(CampusSpace.sm)) {
-                OutlinedActionButton("选择图片", Icons.Outlined.PhotoLibrary, onPick, Modifier.weight(1f), enabled = !busy)
-                if (onShoot != null) {
-                    OutlinedActionButton("拍照", Icons.Outlined.PhotoCamera, onShoot, Modifier.weight(1f), enabled = !busy)
+            OutlinedTextField(
+                value = password,
+                onValueChange = onPasswordChange,
+                enabled = !signingIn,
+                label = { Text("密码") },
+                placeholder = { Text("输入研究生系统密码") },
+                supportingText = passwordError,
+                isError = passwordMissing,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium,
+                visualTransformation = if (passwordVisible) VisualTransformation.None else passwordTransformation,
+                trailingIcon = {
+                    IconButton(
+                        onClick = { passwordVisible = !passwordVisible },
+                        enabled = !signingIn,
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            if (passwordVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                            contentDescription = if (passwordVisible) "隐藏密码" else "显示密码",
+                            modifier = Modifier.size(22.dp),
+                            tint = palette.textSecondary
+                        )
+                    }
+                },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                colors = courseFieldColors(),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("记住本机", style = MaterialTheme.typography.bodyMedium, color = palette.textPrimary)
+                    Text(
+                        if (remember) "学号加密保存在这台手机上，下次打开自动续上登录。"
+                        else "只在本次使用，下次打开需要重新登录。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.textTertiary
+                    )
                 }
+                Spacer(Modifier.width(CampusSpace.sm))
+                CampusSwitch(remember, onRememberChange, label = "记住本机", enabled = !signingIn)
             }
+            CampusPrimaryButton(
+                title = if (signingIn) "正在登录…" else "登录并获取课表",
+                onClick = onSubmit,
+                busy = signingIn,
+                showProgress = false
+            )
         }
     }
 }
 
+/** 已经登录，但这一次没有取回课表: 说清楚现在的状态，再给一个重新取回的按钮。 */
 @Composable
-private fun HintLine(text: String) {
+private fun NoTimetableCard(signingIn: Boolean, onRefresh: () -> Unit) {
     val palette = LocalCampusPalette.current
-    Row(verticalAlignment = Alignment.Top) {
-        Box(
-            Modifier.padding(top = 6.dp).size(4.dp).background(palette.borderStrong, CircleShape)
-        )
-        Spacer(Modifier.width(CampusSpace.sm))
-        Text(text, style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+    CampusCard {
+        Column(Modifier.padding(CampusSpace.lg), verticalArrangement = Arrangement.spacedBy(CampusSpace.md)) {
+            Text(
+                "还没有取到课表",
+                style = MaterialTheme.typography.titleMedium,
+                color = palette.textPrimary,
+                modifier = Modifier.semantics { heading() }
+            )
+            Text(
+                "本机没有保存课表。确认已经连上校园网，再更新一次。",
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.textTertiary
+            )
+            CampusPrimaryButton(
+                title = if (signingIn) "正在更新…" else "更新课表",
+                onClick = onRefresh,
+                busy = signingIn,
+                showProgress = false
+            )
+        }
     }
 }
 
@@ -1250,63 +1119,58 @@ private fun LoadingCard() {
     }
 }
 
-/** 课表管理: swap in a fresh 课表 by Word or photo, fix what it read, recognise it again, or delete. */
+/** 课表管理: 更新课表、手动补课，或者删掉本机保存的这一份。 */
 @Composable
 private fun ManageCard(
-    hasPreview: Boolean,
-    busy: Boolean,
-    importing: Boolean,
-    captureSupported: Boolean,
-    onImportWord: () -> Unit,
-    onPick: () -> Unit,
-    onShoot: () -> Unit,
-    onRetry: () -> Unit,
+    account: String,
+    signingIn: Boolean,
+    onRefresh: () -> Unit,
+    onSignIn: () -> Unit,
+    onSignOut: () -> Unit,
     onDelete: () -> Unit,
     onAddCourse: () -> Unit
 ) {
     val palette = LocalCampusPalette.current
+    val signedIn = account.isNotBlank()
     CampusCard {
         Column(Modifier.padding(CampusSpace.lg), verticalArrangement = Arrangement.spacedBy(CampusSpace.md)) {
-            SectionLabel("课表管理")
-            // 换一份课表通常是从教务系统再导出一份 Word，所以导入排在所有识别动作之前：它不需要
-            // 相机，也不需要网络。
-            OutlinedActionButton(
-                title = if (importing) "正在导入…" else "导入 Word 课表",
-                icon = Icons.Outlined.Description,
-                onClick = onImportWord,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !busy
-            )
-            // A read is allowed to be wrong, so the manual route comes before the recognition ones:
-            // typing a missing 上课地点 must never require another photo or another export.
-            OutlinedActionButton("添加课程", Icons.Outlined.Add, onAddCourse, Modifier.fillMaxWidth(), enabled = !busy)
-            Text(
-                "导入或识别有出入的地方都可以手动补正，包括上课地点；不会影响其他课程。",
-                style = MaterialTheme.typography.bodySmall,
-                color = palette.textTertiary
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(CampusSpace.sm)) {
-                OutlinedActionButton("换一张图片", Icons.Outlined.PhotoLibrary, onPick, Modifier.weight(1f), enabled = !busy)
-                if (captureSupported) {
-                    OutlinedActionButton("拍照", Icons.Outlined.PhotoCamera, onShoot, Modifier.weight(1f), enabled = !busy)
-                }
-            }
-            CampusPrimaryButton(
-                title = "重新识别",
-                onClick = onRetry,
-                enabled = hasPreview,
-                busy = busy,
-                showProgress = false
-            )
-            if (!hasPreview) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                SectionLabel("课表管理")
                 Text(
-                    "重新识别会用最近一次选择的图片再跑一遍；先换一张图片也可以。",
+                    // 退出登录 之后课表还在，所以这一行说清楚现在这份课表是谁的、还能不能更新。
+                    if (signedIn) "已登录 $account" else "未登录 · 正在用本机保存的课表",
                     style = MaterialTheme.typography.bodySmall,
                     color = palette.textTertiary
                 )
             }
+            // 更新课表 is the one action that keeps this page in step with the 研究生系统, so it leads.
+            CampusPrimaryButton(
+                title = when {
+                    signingIn -> "正在更新…"
+                    signedIn -> "更新课表"
+                    else -> "登录研究生系统"
+                },
+                onClick = if (signedIn) onRefresh else onSignIn,
+                busy = signingIn,
+                showProgress = false
+            )
+            // A fetched timetable is allowed to be wrong, so the manual route comes before everything
+            // else: typing a missing 上课地点 must never require another round trip to the server.
+            OutlinedActionButton("添加课程", Icons.Outlined.Add, onAddCourse, Modifier.fillMaxWidth(), enabled = !signingIn)
+            Text(
+                "取回来的课表有出入的地方都可以手动补正，包括上课地点；不会影响其他课程。",
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.textTertiary
+            )
+            OutlinedActionButton(
+                "退出登录",
+                Icons.AutoMirrored.Outlined.Logout,
+                onSignOut,
+                Modifier.fillMaxWidth(),
+                enabled = signedIn && !signingIn
+            )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onDelete, enabled = !busy, modifier = Modifier.heightIn(min = 44.dp)) {
+                TextButton(onClick = onDelete, enabled = !signingIn, modifier = Modifier.heightIn(min = 44.dp)) {
                     Icon(
                         Icons.Outlined.Delete,
                         contentDescription = null,
@@ -1316,153 +1180,6 @@ private fun ManageCard(
                     Spacer(Modifier.width(6.dp))
                     Text("删除课表", color = palette.danger, style = MaterialTheme.typography.labelLarge)
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ApiKeyCard(
-    keyConfigured: Boolean,
-    keyHint: String,
-    draft: String,
-    onDraftChange: (String) -> Unit,
-    visible: Boolean,
-    onVisibleChange: (Boolean) -> Unit,
-    onSave: () -> Unit,
-    onClear: () -> Unit
-) {
-    val palette = LocalCampusPalette.current
-    CampusCard {
-        Column(Modifier.padding(CampusSpace.lg), verticalArrangement = Arrangement.spacedBy(CampusSpace.md)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                CampusIconPlate(Icons.Outlined.Key)
-                Spacer(Modifier.width(CampusSpace.md))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        "识别服务",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = palette.textPrimary
-                    )
-                    Text(
-                        if (keyConfigured) "已保存 $keyHint" else "这台设备的安装包没有内置识别服务",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = palette.textTertiary
-                    )
-                }
-            }
-            Text(
-                "API Key 使用 Android Keystore 加密保存在本机，不会写进源码或安装包；识别时只有课表图片会发送到识别服务。",
-                style = MaterialTheme.typography.bodySmall,
-                color = palette.textSecondary
-            )
-            OutlinedTextField(
-                value = draft,
-                onValueChange = onDraftChange,
-                singleLine = true,
-                label = { Text(if (keyConfigured) "更换 API Key" else "API Key") },
-                placeholder = { Text("sk-…") },
-                visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
-                trailingIcon = {
-                    IconButton(onClick = { onVisibleChange(!visible) }) {
-                        Icon(
-                            if (visible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                            contentDescription = if (visible) "隐藏 API Key" else "显示 API Key",
-                            modifier = Modifier.size(18.dp),
-                            tint = palette.textSecondary
-                        )
-                    }
-                },
-                // The field is a stock Material component, so every colour it paints is named here
-                // rather than inherited: a key field is never the place to discover a dark-mode gap.
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = palette.textPrimary,
-                    unfocusedTextColor = palette.textPrimary,
-                    cursorColor = palette.accent,
-                    selectionColors = TextSelectionColors(
-                        handleColor = palette.accent,
-                        backgroundColor = palette.accent.copy(alpha = 0.30f)
-                    ),
-                    focusedBorderColor = palette.accent,
-                    unfocusedBorderColor = palette.borderStrong,
-                    focusedLabelColor = palette.onAccentWash,
-                    unfocusedLabelColor = palette.textSecondary,
-                    focusedPlaceholderColor = palette.textTertiary,
-                    unfocusedPlaceholderColor = palette.textTertiary,
-                    focusedTrailingIconColor = palette.textSecondary,
-                    unfocusedTrailingIconColor = palette.textTertiary
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(CampusSpace.sm)) {
-                CampusPrimaryButton(
-                    title = if (keyConfigured) "保存新的 API Key" else "保存到本机",
-                    onClick = onSave,
-                    enabled = draft.isNotBlank(),
-                    showProgress = false,
-                    modifier = Modifier.weight(1f)
-                )
-                if (keyConfigured) {
-                    OutlinedActionButton("删除 Key", Icons.Outlined.Delete, onClear, Modifier.weight(1f))
-                }
-            }
-        }
-    }
-}
-
-/** Concrete reason, concrete next step — never a bare "识别失败". */
-@Composable
-private fun FailureCard(
-    failure: TimetableVisionFailure,
-    message: String?,
-    canRetry: Boolean,
-    busy: Boolean,
-    onRetry: () -> Unit,
-    onPickAnother: () -> Unit
-) {
-    val palette = LocalCampusPalette.current
-    val notATimetable = failure == TimetableVisionFailure.NOT_A_TIMETABLE
-    val ink = if (notATimetable) palette.warning else palette.danger
-    val background = if (notATimetable) palette.warningWash else palette.dangerWash
-    Surface(
-        color = background,
-        shape = CampusRadius.lgShape,
-        border = BorderStroke(1.dp, ink.copy(alpha = 0.28f)),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(Modifier.padding(CampusSpace.lg), verticalArrangement = Arrangement.spacedBy(CampusSpace.md)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    if (notATimetable) Icons.Outlined.Image else Icons.Outlined.WarningAmber,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = ink
-                )
-                Spacer(Modifier.width(CampusSpace.sm))
-                Text(
-                    failureTitle(failure),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = ink,
-                    modifier = Modifier.semantics { heading() }
-                )
-            }
-            Text(
-                message ?: "识别失败，请重试。",
-                style = MaterialTheme.typography.bodySmall,
-                color = palette.textSecondary
-            )
-            if (notATimetable) {
-                Text(
-                    "把整张课表拍进画面，保持水平、光线均匀，再试一次。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = palette.textTertiary
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(CampusSpace.sm)) {
-                if (canRetry) {
-                    OutlinedActionButton("重新识别", Icons.Outlined.Refresh, onRetry, Modifier.weight(1f), enabled = !busy)
-                }
-                OutlinedActionButton("换一张图片", Icons.Outlined.PhotoLibrary, onPickAnother, Modifier.weight(1f), enabled = !busy)
             }
         }
     }
@@ -1527,7 +1244,7 @@ internal fun newCourseFields(): CourseEditFields = CourseEditFields(
     parity = WeekParity.ALL
 )
 
-/** The same fields, filled from a course the recognition — or an earlier edit — already produced. */
+/** The same fields, filled from a course the fetch — or an earlier edit — already produced. */
 internal fun courseEditFields(course: TimetableCourse): CourseEditFields = CourseEditFields(
     name = course.name,
     teacher = course.teacher,
@@ -1581,9 +1298,9 @@ private fun weekdayHint(text: String): String {
 }
 
 /**
- * 手动增改一门课. A 课表 read — from a photo or from a Word file — is allowed to be wrong, so every
- * value it produced has to be correctable by hand, 上课地点 above all: a photo often misreads it and
- * the 教务系统's print-out often leaves it empty.
+ * 手动增改一门课. A 课表 taken from the 研究生系统 is allowed to be incomplete, so every value it
+ * produced has to be correctable by hand, 上课地点 above all: the server's own list often leaves it
+ * empty.
  *
  * Nothing is written until 保存: [onSave] hands the draft to the controller, which owns the range
  * and conflict checks and reports a refusal through the page's own message line. 取消, back and a
@@ -1649,8 +1366,8 @@ private fun CourseEditorSheet(
                 supporting = "课表上怎么写就怎么写",
                 error = if (submitted && fields.name.isBlank()) "请填写课程名" else null
             )
-            // 上课地点 is the field a photo most often loses and the one the printed 课表 leaves empty,
-            // so it sits directly under the name rather than at the bottom of a list of details.
+            // 上课地点 is the field the server's list most often leaves empty, so it sits directly
+            // under the name rather than at the bottom of a list of details.
             CourseField(
                 value = fields.room,
                 onValueChange = { fields = fields.copy(room = it) },
@@ -1867,7 +1584,7 @@ private fun courseFieldColors(): TextFieldColors {
 private fun CourseDetailSheet(
     course: TimetableCourse,
     week: Int,
-    /** `14:00-16:15`, or null when the source stated no clocks — a photo read never carries them. */
+    /** `14:00-16:15`, or null when the source stated no clocks for this course. */
     timeSpan: String?,
     tint: CourseTint,
     onDismiss: () -> Unit,
@@ -1921,8 +1638,8 @@ private fun CourseDetailSheet(
                 DetailRow("任课教师", course.teacher.ifBlank { "未填写" })
                 DetailRow("上课地点", course.room.ifBlank { "未填写" })
             }
-            // Whether the course came out of a photo or a Word file, the read is allowed to be wrong,
-            // so this sheet is never the end of the story: every field above can be corrected by hand.
+            // A fetched course is allowed to be incomplete, so this sheet is never the end of the
+            // story: every field above can be corrected by hand.
             OutlinedActionButton("编辑这门课", Icons.Outlined.Edit, onEdit, Modifier.fillMaxWidth())
         }
     }
@@ -2160,122 +1877,8 @@ private fun weekSubtitle(state: TimetableUiState): String {
     return "${first.monthValue}月${first.dayOfMonth}日 - ${last.monthValue}月${last.dayOfMonth}日"
 }
 
-private fun failureTitle(failure: TimetableVisionFailure): String = when (failure) {
-    TimetableVisionFailure.NOT_A_TIMETABLE -> "没识别到课表"
-    TimetableVisionFailure.MISSING_KEY -> "还没有可用的识别服务"
-    TimetableVisionFailure.INVALID_REQUEST -> "这次请求被拒绝了"
-    TimetableVisionFailure.UNAUTHORIZED -> "识别服务拒绝了当前密钥"
-    TimetableVisionFailure.QUOTA -> "识别额度不足"
-    TimetableVisionFailure.RATE_LIMITED -> "请求太频繁了"
-    TimetableVisionFailure.TIMEOUT -> "识别超时"
-    TimetableVisionFailure.NO_NETWORK -> "网络不可用"
-    TimetableVisionFailure.TOO_LARGE -> "图片太大"
-    TimetableVisionFailure.SERVER -> "识别服务暂时不可用"
-    TimetableVisionFailure.EMPTY_RESPONSE -> "AI 没有返回内容"
-    TimetableVisionFailure.MALFORMED_RESPONSE -> "识别结果无法使用"
-}
-
 private fun formatDate(millis: Long): String =
     android.text.format.DateFormat.format("yyyy-MM-dd HH:mm", millis).toString()
 
 private fun utcMillisToEpochDay(millis: Long): Long =
     java.time.Instant.ofEpochMilli(millis).atZone(ZoneOffset.UTC).toLocalDate().toEpochDay()
-
-private sealed interface ImageLoad {
-    data class Ready(val prepared: PreparedTimetableImage) : ImageLoad
-    data class Failed(val message: String) : ImageLoad
-}
-
-/** Decoding is blocking and memory hungry, so it runs off the main thread and never throws out. */
-private suspend fun loadPreparedImage(context: Context, uri: Uri, discardAfterwards: Boolean): ImageLoad =
-    withContext(Dispatchers.IO) {
-        try {
-            ImageLoad.Ready(TimetableImageLoader.prepare(context.contentResolver, uri))
-        } catch (_: OutOfMemoryError) {
-            ImageLoad.Failed("这张图片太大，手机无法处理，请换一张分辨率低一些的照片。")
-        } catch (failure: ImagePreparationException) {
-            ImageLoad.Failed(failure.message ?: "这张图片无法读取，请换一张试试。")
-        } catch (_: Exception) {
-            ImageLoad.Failed("这张图片无法读取，请换一张试试。")
-        } finally {
-            if (discardAfterwards) TimetableImageLoader.discardCaptureTarget(context, uri)
-        }
-    }
-
-/** The picked Word file's name and bytes, or the notice that stands in for them. */
-private sealed interface WordPick {
-    data class Ready(val fileName: String, val bytes: ByteArray) : WordPick
-    data class Failed(val message: String) : WordPick
-}
-
-/**
- * Reading a picked file is blocking and unbounded, so it runs off the main thread and never throws
- * out. The size is checked twice on purpose: once from what the provider declares, so a huge file is
- * never read at all, and once from what actually arrived, because that declaration can be missing.
- */
-private suspend fun readWordPick(context: Context, uri: Uri): WordPick = withContext(Dispatchers.IO) {
-    val fileName = wordColumn(context, uri, OpenableColumns.DISPLAY_NAME)?.takeIf { it.isNotBlank() }
-        ?: "课表文件"
-    try {
-        val declared = wordColumn(context, uri, OpenableColumns.SIZE)?.toLongOrNull()
-        declared?.let { WordImportFiles.oversizeNotice(fileName, it)?.let { notice -> return@withContext WordPick.Failed(notice) } }
-        val stream = context.contentResolver.openInputStream(uri)
-            ?: return@withContext WordPick.Failed("「$fileName」读不出来，请换一个文件。")
-        val bytes = stream.use { WordImportFiles.readAtMost(it) }
-            ?: return@withContext WordPick.Failed(WordImportFiles.oversizeNotice(fileName))
-        WordPick.Ready(fileName, bytes)
-    } catch (_: OutOfMemoryError) {
-        WordPick.Failed(WordImportFiles.oversizeNotice(fileName))
-    } catch (_: Exception) {
-        WordPick.Failed("「$fileName」读不出来，请换一个文件。")
-    }
-}
-
-/** One column of the picked file's provider row, or null when the provider does not offer it. */
-private fun wordColumn(context: Context, uri: Uri, column: String): String? = try {
-    context.contentResolver.query(uri, arrayOf(column), null, null, null)
-        ?.use { cursor -> if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getString(0) else null }
-} catch (_: Exception) { null }
-
-/**
- * The half of the Word import that has nothing to do with Android: which types the picker offers, how
- * much of a file may be held, and what a file too large to read is told. It sits beside the screen
- * because that is its only caller, and it is internal so the decisions can be held without a device.
- */
-internal object WordImportFiles {
-
-    /**
-     * The picker's own type filter. The wildcard is last rather than first: a file manager that
-     * matches on the whole list would offer every file, while one that only un-greys a file its own
-     * type index knows still has the two Word types to match. What the file really is, the bytes say.
-     */
-    val MIME_TYPES: Array<String> = arrayOf(
-        "application/msword",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "*/*"
-    )
-
-    /**
-     * Everything [input] holds, or null as soon as it holds more than [limit] bytes. `readBytes()`
-     * would take the heap down with a stream whose length was never declared, and the importer refuses
-     * anything past [WordDocuments.MAX_BYTES] anyway.
-     */
-    fun readAtMost(input: InputStream, limit: Int = WordDocuments.MAX_BYTES): ByteArray? {
-        val out = ByteArrayOutputStream()
-        val buffer = ByteArray(64 * 1024)
-        while (true) {
-            val read = input.read(buffer)
-            if (read < 0) return out.toByteArray()
-            if (out.size() + read > limit) return null
-            out.write(buffer, 0, read)
-        }
-    }
-
-    /** Why a file of [size] bytes is not worth reading, or null while it is inside the limit. */
-    fun oversizeNotice(fileName: String, size: Long): String? =
-        if (size <= WordDocuments.MAX_BYTES) null else oversizeNotice(fileName)
-
-    /** The same notice for a file whose length only became clear part-way through being read. */
-    fun oversizeNotice(fileName: String): String =
-        "「$fileName」超过 ${WordDocuments.MAX_BYTES / (1024 * 1024)} MB，课表文件没有这么大，请换一个文件。"
-}
