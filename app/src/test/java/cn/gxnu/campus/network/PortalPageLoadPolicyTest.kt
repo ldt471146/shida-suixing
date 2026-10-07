@@ -121,7 +121,7 @@ class PortalPageLoadPolicyTest {
             assertFalse("a failed page must never read as a success: $reason", reason.contains("成功"))
         }
         assertTrue(PortalPageLoadPolicy.reasonFor(PortalFailure.TIMEOUT).contains("超时"))
-        assertTrue(PortalPageLoadPolicy.reasonFor(PortalFailure.UNREACHABLE).contains("GXNU-YC"))
+        assertTrue(PortalPageLoadPolicy.reasonFor(PortalFailure.UNREACHABLE).contains("校园 Wi-Fi"))
     }
 
     @Test

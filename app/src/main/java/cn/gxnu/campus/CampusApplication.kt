@@ -386,7 +386,7 @@ class CampusRuntime(private val application: Application) : CampusActions {
     }
 
     fun onEmbeddedPortalUnavailable() {
-        feedback.publish("请先连接 GXNU-YC 并设置校园网账号和供应商，再打开学校认证页面。")
+        feedback.publish("请先连接校园 Wi-Fi 并设置校园网账号和供应商，再打开学校认证页面。")
         render()
     }
 
@@ -500,9 +500,9 @@ class CampusRuntime(private val application: Application) : CampusActions {
 
     private fun permissionMessage(): String = when {
         !WifiEnvironment.hasNetworkPermissions(application) && !WifiEnvironment.isLocationEnabled(application) ->
-            "请允许精确位置和附近 Wi-Fi 权限，并开启系统位置开关，以识别 GXNU-YC。"
+            "请允许精确位置和附近 Wi-Fi 权限，并开启系统位置开关，以识别校园 Wi-Fi。"
         !WifiEnvironment.isLocationEnabled(application) -> "请开启系统位置开关，以识别校园 Wi-Fi 名称。"
-        else -> "请允许精确位置和附近 Wi-Fi 权限，以确认当前连接的是 GXNU-YC。"
+        else -> "请允许精确位置和附近 Wi-Fi 权限，以确认当前连接的是校园 Wi-Fi。"
     }
 
     private fun updateCoordinator() {

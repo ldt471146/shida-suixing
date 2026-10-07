@@ -26,6 +26,17 @@ class VisiblePortalTargetTest {
     }
 
     /**
+     * 用户报的故障（0.8.3）：他那台 AP 报出来的名字是 `GXNU.YC`，常量里钉的却是 `GXNU-YC`。
+     * 嵌入的认证页必须为这张网打开 —— 它才是用户真正连着的那张。
+     */
+    @Test
+    fun theRealAccessPointNameIsAccepted() {
+        val real = NetworkSnapshot(id = "wifi-1", ssid = "GXNU.YC", isWifi = true)
+        assertTrue("点号拼法是同一张网", real.isNamedCampus)
+        assertFalse(real.hasUnknownName)
+    }
+
+    /**
      * 名字读不出来（没给定位权限，或学校换了 SSID）时它**不是**「别的 Wi-Fi」：Android 会把
      * 没法核实名字的网络报成同一个占位符，把它当外网就会把明明连在校园网上的用户挡在外面。
      */

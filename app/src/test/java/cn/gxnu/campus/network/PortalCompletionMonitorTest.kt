@@ -84,7 +84,7 @@ class PortalCompletionMonitorTest {
 
         val unreachableReason = (unreachable.state.value as PortalCompletion.Manual).reason
         val offlineReason = (offline.state.value as PortalCompletion.Manual).reason
-        assertTrue(unreachableReason.contains("GXNU-YC"))
+        assertTrue(unreachableReason.contains("校园 Wi-Fi"))
         assertNotEquals(offlineReason, unreachableReason)
     }
 

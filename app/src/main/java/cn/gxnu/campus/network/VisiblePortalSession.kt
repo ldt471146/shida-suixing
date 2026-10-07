@@ -271,10 +271,10 @@ internal object PortalPageLoadPolicy {
 
     /** Plain words for a page that did not arrive, saying what to check and what to do next. */
     fun reasonFor(failure: PortalFailure): String = when (failure) {
-        PortalFailure.TIMEOUT -> "学校认证页响应超时，请确认仍连接 GXNU-YC 校园 Wi-Fi 后重试。"
+        PortalFailure.TIMEOUT -> "学校认证页响应超时，请确认仍连接校园 Wi-Fi 后重试。"
         PortalFailure.UNSUPPORTED -> "学校认证页跳转到了不允许的地址，请重新加载重试。"
         PortalFailure.INVALID_RESPONSE -> "学校认证页返回的内容无法识别，请重新加载重试。"
-        else -> "无法连接学校认证页，请确认已连接 GXNU-YC 校园 Wi-Fi 后重试。"
+        else -> "无法连接学校认证页，请确认已连接校园 Wi-Fi 后重试。"
     }
 }
 
@@ -338,7 +338,7 @@ internal object PortalCompletionPolicy {
 
     private fun fallbackReason(probe: PortalProbe): String = when (probe) {
         // The probe could not reach this Wi-Fi at all, so the page may still be logged in by hand.
-        PortalProbe.UNREACHABLE -> "校园 Wi-Fi 检测暂时不可用，请确认仍连接 GXNU-YC，可在此页面手动登录。"
+        PortalProbe.UNREACHABLE -> "校园 Wi-Fi 检测暂时不可用，请确认仍连接校园 Wi-Fi，可在此页面手动登录。"
         else -> "仍未检测到外网，可在此页面手动登录，完成后返回首页。"
     }
 }

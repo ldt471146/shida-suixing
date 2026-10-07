@@ -65,7 +65,7 @@ class PortalCompletionPolicyTest {
         val offline = (settled(PortalCompletionPolicy.next(PortalCompletionPolicy.POLL_DEADLINE_MILLIS, PortalProbe.OFFLINE))
             as PortalCompletion.Manual).reason
         assertNotEquals(offline, unreachable)
-        assertTrue(unreachable.contains("GXNU-YC"))
+        assertTrue(unreachable.contains("校园 Wi-Fi"))
     }
 
     @Test fun theWatchIsBoundedToAWholeMinuteAtASaneInterval() {

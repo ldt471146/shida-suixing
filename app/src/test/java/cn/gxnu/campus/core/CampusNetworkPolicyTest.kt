@@ -39,22 +39,50 @@ class CampusNetworkPolicyTest {
         assertNull(CampusNetworkPolicy.refusal(unnamed))
     }
 
-    /** 名字**读得出来**、又不是校园网 —— 这时候名字才是证据，认证不该发到这张网上。 */
+    /** 名字**读得出来**、又不像校园网 —— 这时候名字才是证据，认证不该发到这张网上。 */
     @Test
     fun aNamedNetworkThatIsNotTheCampusOneIsRefused() {
         assertEquals(CampusNetworkPolicy.Verdict.OtherNetwork, CampusNetworkPolicy.check(home))
         assertFalse(CampusNetworkPolicy.allows(home))
-        assertEquals("请先连接校园 Wi-Fi。", CampusNetworkPolicy.refusal(home))
+        val refusal = CampusNetworkPolicy.refusal(home)
+        assertEquals("当前 Wi-Fi「Home-WiFi」不是校园网，请切换到校园网 Wi-Fi。", refusal)
+        assertTrue("拒绝的理由就是名字，那就得把名字说出来", refusal!!.contains("Home-WiFi"))
     }
 
-    /** 大小写不相等就是别的网络：学校那张网叫 `GXNU-YC`，`gxnu-yc` 不是它。 */
+    /**
+     * 用户报的故障，0.8.3 修的就是它。他那台 AP 报出来的名字是 `GXNU.YC`（**点号**，截图放大
+     * 到 4 倍能看到它落在基线上），而代码里钉的是 `GXNU-YC`（横线）。一个字符之差，精确比较判成
+     * 「别的网络」，于是手机明明连在校园网上、应用却让用户「请先连接校园 Wi-Fi」—— 而用户永远
+     * 做不到，因为那张网的名字本来就不长这样。
+     *
+     * 点、横线、下划线、空格、大小写、`-5G` 后缀只是同一个 SSID 的不同写法，都是同一张网。
+     */
     @Test
-    fun aLookalikeNameIsStillAnotherNetwork() {
-        listOf("gxnu-yc", "GXNU-YC-5G", "GXNU-YC ", "GXNU_YC").forEach { lookalike ->
+    fun everySpellingOfTheCampusNameIsTheCampusNetwork() {
+        listOf(
+            "GXNU-YC", "GXNU.YC", "gxnu-yc", "GXNU_YC", " GXNU-YC ", "GXNU.YC-5G",
+            "GXNU-YC-5G", "GXNUYC", "GXNU.YC.Student", "广西师范大学"
+        ).forEach { spelling ->
+            val network = NetworkSnapshot("wifi-x", spelling, isWifi = true)
+            assertEquals("「$spelling」是校园网", CampusNetworkPolicy.Verdict.Allowed, CampusNetworkPolicy.check(network))
+            assertNull(CampusNetworkPolicy.refusal(network))
+        }
+    }
+
+    /**
+     * 归一化之后不带学校记号的名字仍然是别的网络 —— 放宽拼法不等于什么都放行。
+     *
+     * 判据是「名字里有没有学校记号」，所以把 AP 起名叫 `GXNU-什么` 一样会被当成校园网。这是
+     * 有意的：精确相等的判据挡不住这件事（把 AP 起名叫 `GXNU-YC` 就行），而它挡得住用户
+     * 自己那张真实的校园网 —— 后者才是实际发生过的故障。
+     */
+    @Test
+    fun aNameWithoutTheSchoolMarkIsStillAnotherNetwork() {
+        listOf("Home-WiFi", "Guest", "CMCC-5G", "TP-LINK_5G", "宿舍路由").forEach { other ->
             assertEquals(
-                "「$lookalike」不是校园网",
+                "「$other」不是校园网",
                 CampusNetworkPolicy.Verdict.OtherNetwork,
-                CampusNetworkPolicy.check(NetworkSnapshot("wifi-x", lookalike, isWifi = true))
+                CampusNetworkPolicy.check(NetworkSnapshot("wifi-x", other, isWifi = true))
             )
         }
     }

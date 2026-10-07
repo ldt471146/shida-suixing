@@ -30,7 +30,7 @@ internal class PreviewController(private val scope: CoroutineScope, initial: Con
         wifiName = when (initial) {
             ConnectionStatus.NO_WIFI -> "未连接 Wi-Fi"
             ConnectionStatus.OUTSIDE_CAMPUS -> "Home-WiFi"
-            else -> "GXNU-YC"
+            else -> "GXNU.YC"
         },
         accountConfigured = initial != ConnectionStatus.NEED_ACCOUNT,
         maskedAccount = "202***0001",
@@ -118,8 +118,8 @@ internal class PreviewController(private val scope: CoroutineScope, initial: Con
 }
 
 private fun previewMessage(status: ConnectionStatus): String = when (status) {
-    ConnectionStatus.NO_WIFI -> "请先在系统设置中连接 GXNU-YC，再返回这里认证。"
-    ConnectionStatus.OUTSIDE_CAMPUS -> "当前连接的是其他 Wi-Fi，请切换到 GXNU-YC。"
+    ConnectionStatus.NO_WIFI -> "请先在系统设置中连接校园 Wi-Fi，再返回这里认证。"
+    ConnectionStatus.OUTSIDE_CAMPUS -> "当前连接的是其他 Wi-Fi，请切换到校园 Wi-Fi。"
     ConnectionStatus.NEED_ACCOUNT -> "首次设置校园网账号，保存后不用反复填写。"
     ConnectionStatus.NEED_PROVIDER -> "选择学校认证页面对应的供应商，下次沿用。"
     ConnectionStatus.NEED_PERMISSION -> "允许精确位置与附近 Wi-Fi 权限，以识别校园网络。"

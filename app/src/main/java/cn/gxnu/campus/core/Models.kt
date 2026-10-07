@@ -16,13 +16,29 @@ enum class ConnectionStatus {
 }
 
 /**
- * 校园网的 Wi-Fi 名。它**只是**一个「先看这个」的提示，不再是准入条件。
+ * 校园网 SSID 里带的学校记号。名字里出现它，就当作校园网。
  *
- * 学校可能换 SSID、同一栋楼可能有两张校园网、Android 在没拿到定位权限时还会把名字
- * 抹成 `未识别 Wi-Fi`。这些情况下名字都对不上，而手机其实就好好连在校园网上 —— 所以
- * 真正决定「这是不是校园网」的是[校园认证入口本身](CampusPortal)，不是这个字符串。
+ * 这里原来是一句 `ssid == "GXNU-YC"` 的精确比较，0.8.3 修的故障就是它：用户那台 AP 报出来的
+ * 名字是 `GXNU.YC`（**点号**，截图里放大到 4 倍能看清它对在基线上，和标题里那个居中的
+ * `·` 不是同一个字符）。精确比较判成「别的网络」，于是手机明明连在校园网上、应用却让用户
+ * 「请先连接校园 Wi-Fi」—— 用户永远做不到，因为那张网的名字本来就不长这样。
+ *
+ * 点的、横的、下划线的、带 `-5G` 后缀的、大写小写的都是同一张网，所以这里先归一化再找记号，
+ * 让「像不像校园网」不再依赖某一个字符恰好是横线。
  */
-const val CAMPUS_SSID_HINT = "GXNU-YC"
+private val CAMPUS_SSID_MARKERS = listOf("gxnu", "广西师范大学")
+
+/**
+ * 名字里带学校记号吗。
+ *
+ * 归一化：转小写，并去掉所有非字母数字 —— `GXNU-YC`、`GXNU.YC`、`GXNU_YC`、`gxnu-yc-5g`
+ * 全部变成 `gxnuyc…`，于是它们全都命中。它只回答「像不像」，不回答「是不是」：后面那个问题
+ * 只有认证入口有权回答，见 [CampusNetworkPolicy]。
+ */
+fun looksLikeCampusSsid(ssid: String): Boolean {
+    val normalized = ssid.lowercase().filter { it.isLetterOrDigit() }
+    return normalized.isNotEmpty() && CAMPUS_SSID_MARKERS.any { normalized.contains(it) }
+}
 
 /** 读不到名字时 [NetworkSnapshot.ssid] 用的占位符；它和「确实是别的 Wi-Fi」是两回事。 */
 const val UNKNOWN_SSID = "未识别 Wi-Fi"
@@ -31,8 +47,8 @@ data class NetworkSnapshot(
     val id: String, val ssid: String, val isWifi: Boolean,
     val isValidated: Boolean? = null, val isCaptivePortal: Boolean? = null
 ) {
-    /** 名字读出来了，而且是校园网那一张 —— 可以直接放行，不必先去问认证页。 */
-    val isNamedCampus: Boolean get() = isWifi && ssid == CAMPUS_SSID_HINT
+    /** 名字读出来了，而且像校园网那一张 —— 可以直接放行，不必先去问认证页。 */
+    val isNamedCampus: Boolean get() = isWifi && looksLikeCampusSsid(ssid)
 
     /** 这张 Wi-Fi 的名字根本没读出来，所以「它是不是校园网」无从判断。 */
     val hasUnknownName: Boolean get() = ssid.isBlank() || ssid == UNKNOWN_SSID

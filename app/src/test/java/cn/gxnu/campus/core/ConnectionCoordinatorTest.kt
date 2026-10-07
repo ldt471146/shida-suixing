@@ -229,12 +229,24 @@ class ConnectionCoordinatorTest {
     @Test fun aNamedWifiThatIsNotTheCampusOneNeverStartsCampusTransport() = runTest {
         val transport = TestTransport()
         val coordinator = ConnectionCoordinator(this, transport)
-        listOf("Home-WiFi", "Guest", "GXNU-YC-5G", "gxnu-yc").forEachIndexed { index, ssid ->
+        listOf("Home-WiFi", "Guest", "CMCC-5G").forEachIndexed { index, ssid ->
             coordinator.update(NetworkSnapshot("other-$index", ssid, true), credentials, Provider.CAMPUS, autoConnect = true)
             coordinator.connect()
             runCurrent()
             assertEquals("「$ssid」不是校园网", ConnectionStatus.OUTSIDE_CAMPUS, coordinator.state.value.status)
             assertTrue(transport.events.isEmpty())
+        }
+    }
+
+    // 同一个故障的另一半：那台 AP 报的名字是 `GXNU.YC`，代码钉的是 `GXNU-YC`。拼法不同而已，
+    // 用户明明连在校园网上，认证就得真的发出去。
+    @Test fun everySpellingOfTheCampusNameStartsTransport() = runTest {
+        val transport = TestTransport()
+        val coordinator = ConnectionCoordinator(this, transport)
+        listOf("GXNU.YC", "gxnu-yc", "GXNU-YC-5G", "GXNU_YC").forEachIndexed { index, ssid ->
+            coordinator.update(NetworkSnapshot("campus-$index", ssid, true), credentials, Provider.CAMPUS)
+            runCurrent()
+            assertEquals("「$ssid」是校园网", ConnectionStatus.READY, coordinator.state.value.status)
         }
     }
 

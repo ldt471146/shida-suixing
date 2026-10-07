@@ -233,9 +233,9 @@ fun AutoConnectRow(state: CampusUiState, onCheckedChange: (Boolean) -> Unit, mod
         modifier = modifier,
         description = when {
             state.initializing -> "正在读取设置…"
-            !state.autoConnect -> "连接 GXNU-YC 后自动认证"
-            state.autoRunning -> "GXNU-YC · 后台服务运行中"
-            else -> "GXNU-YC · 等待后台服务启动"
+            !state.autoConnect -> "连接校园 Wi-Fi 后自动认证"
+            state.autoRunning -> "校园 Wi-Fi · 后台服务运行中"
+            else -> "校园 Wi-Fi · 等待后台服务启动"
         },
         leadingIcon = Icons.Outlined.Autorenew,
         showChevron = false,
@@ -288,7 +288,7 @@ fun ConnectionHelpDialog(actions: CampusActions, onDismiss: () -> Unit) {
                 Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(CampusSpace.lg)
             ) {
-                HelpParagraph("先连接校园 Wi-Fi", "在系统 Wi-Fi 设置中选择 GXNU-YC。校园账号只会用于这一个网络。")
+                HelpParagraph("先连接校园 Wi-Fi", "在系统 Wi-Fi 设置中选择学校的校园网（育才校区是 GXNU.YC）。校园账号只会用于校园网。")
                 HelpParagraph("账号与运营商", "填写学校校园网账号和密码，并选择学校认证页面对应的运营商。账号有误时，请修改后再次连接。")
                 HelpParagraph("自动连接如何运行", "开启后，App 会通过带持续通知的后台服务监听校园 Wi-Fi。强制停止、设备重启或权限撤销后，重新打开 App 恢复服务。")
                 HelpParagraph("认证后仍不能上网", "App 会继续检查校园 Wi-Fi 的外网。学校入口异常或需要人工验证时，可打开学校认证页面处理。")
