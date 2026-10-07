@@ -28,6 +28,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.foundation.verticalScroll
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Today
@@ -123,10 +125,15 @@ import cn.gxnu.campus.ui.theme.LocalCampusPalette
 import java.time.LocalDate
 import java.time.ZoneOffset
 
-private val GridCellHeight = 66.dp
-private val GridCellGap = 3.dp
-private val GridPeriodWidth = 30.dp
-private val GridHeaderHeight = 42.dp
+private val GridCellHeight = 74.dp
+private val GridCellGap = 4.dp
+// The 节次 gutter states two things per row — 第 N 节 and the clock it starts at — so it is sized for
+// "第13节" rather than for a bare digit. It is still the narrowest column on the grid.
+private val GridPeriodWidth = 58.dp
+private val GridHeaderHeight = 52.dp
+// Every cell and card on the grid shares one corner: the reference look is rounded, and a single
+// value is what keeps a spanning course and a single-period one from looking like different things.
+private val GridCellCorner = 10.dp
 // Five day columns take an exact equal share of the card and never scroll: the ordinary week has to
 // stay exactly as it was. A shorter week keeps a floor and a ceiling instead, so it neither breaks a
 // four-character course name one character per line nor stretches across the whole card.
@@ -402,6 +409,7 @@ private fun TimetableSection(
         WeekGridCard(
             timetable = timetable,
             week = state.selectedWeek,
+            termStartEpochDay = state.termStartEpochDay,
             todayWeekday = state.todayWeekday,
             showingCurrentWeek = showingCurrentWeek,
             slots = slots,
@@ -643,6 +651,8 @@ private fun TodayCourseRow(course: TimetableCourse, time: String?, tint: CourseT
 private fun WeekGridCard(
     timetable: Timetable,
     week: Int,
+    /** Epoch day of the term's first Monday; null until the user sets it, and then no dates show. */
+    termStartEpochDay: Long?,
     todayWeekday: Int,
     showingCurrentWeek: Boolean,
     slots: Map<TimetableCourse, Int>,
@@ -651,6 +661,10 @@ private fun WeekGridCard(
     val palette = LocalCampusPalette.current
     val grid = remember(timetable, week) { TimetableGridLayout.build(timetable, week) }
     val horizontal = rememberScrollState()
+    // The seven dates of the week being shown, so a header can say 周三 · 10/8 rather than just 周三.
+    val dates = remember(termStartEpochDay, week) {
+        termStartEpochDay?.let { TimetableCalendar.weekDates(it, week) }
+    }
     CampusCard {
         Column(
             // The grid is the one card that gives its horizontal padding back to the columns: at a
@@ -713,13 +727,27 @@ private fun WeekGridCard(
                             }
                         ) {
                             Column(verticalArrangement = Arrangement.spacedBy(GridCellGap)) {
-                                Row(Modifier.horizontalScroll(horizontal)) {
-                                    Spacer(Modifier.width(GridPeriodWidth))
+                                Row(Modifier.horizontalScroll(horizontal), verticalAlignment = Alignment.CenterVertically) {
+                                    // The gutter has its own header so the left column reads as the
+                                    // 节次 axis rather than as a nameless strip of numbers.
+                                    Box(
+                                        Modifier.width(GridPeriodWidth).height(GridHeaderHeight),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            "节次",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = palette.textTertiary,
+                                            maxLines = 1
+                                        )
+                                    }
                                     grid.days.forEach { day ->
                                         Spacer(Modifier.width(GridCellGap))
                                         DayHeader(
                                             weekday = day.weekday,
                                             isToday = showingCurrentWeek && day.weekday == todayWeekday,
+                                            dateLabel = dates?.getOrNull(day.weekday - 1)
+                                                ?.let { "${it.monthValue}/${it.dayOfMonth}" },
                                             width = dayWidth
                                         )
                                     }
@@ -760,9 +788,9 @@ private fun WeekGridCard(
 }
 
 /**
- * The 节次 gutter label: the row's number, and under it the clock that row starts at when the
- * source stated one. A printed 课表 states both in this column, so the fetch carries the clock;
- * a timetable that states no clocks leaves the gutter as it was.
+ * The 节次 gutter label: the row's number, and under it the clock that row starts at when the source
+ * stated one. A printed 课表 states both in this column, so the fetch carries the clock; a timetable
+ * that states no clocks leaves the gutter with just the number.
  */
 @Composable
 private fun PeriodGutterLabel(period: Int, startClock: String?) {
@@ -773,8 +801,8 @@ private fun PeriodGutterLabel(period: Int, startClock: String?) {
     ) {
         Text(
             gutterPeriodLabel(period),
-            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, lineHeight = 13.sp),
-            color = palette.textTertiary,
+            style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp, lineHeight = 14.sp),
+            color = palette.textSecondary,
             textAlign = TextAlign.Center,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -782,8 +810,8 @@ private fun PeriodGutterLabel(period: Int, startClock: String?) {
         if (startClock != null) {
             Text(
                 startClock,
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, lineHeight = 11.sp),
-                color = palette.textTertiary.copy(alpha = 0.8f),
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, lineHeight = 12.sp),
+                color = palette.textTertiary,
                 textAlign = TextAlign.Center,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -792,14 +820,17 @@ private fun PeriodGutterLabel(period: Int, startClock: String?) {
     }
 }
 
+/**
+ * One weekday header: 周X over its date, with today as a filled pill. The date only exists once the
+ * term start is known — a guessed date would be worse than none, so the line simply stays empty.
+ */
 @Composable
-private fun DayHeader(weekday: Int, isToday: Boolean, width: Dp) {
+private fun DayHeader(weekday: Int, isToday: Boolean, dateLabel: String?, width: Dp) {
     val palette = LocalCampusPalette.current
     Surface(
         Modifier.width(width).height(GridHeaderHeight),
-        color = if (isToday) palette.accentWash else palette.muted,
-        shape = CampusRadius.smShape,
-        border = if (isToday) BorderStroke(1.dp, palette.accentBorder) else null
+        color = if (isToday) palette.accent else palette.muted,
+        shape = RoundedCornerShape(GridCellCorner)
     ) {
         Column(
             Modifier.fillMaxWidth(),
@@ -809,15 +840,15 @@ private fun DayHeader(weekday: Int, isToday: Boolean, width: Dp) {
             Text(
                 TIMETABLE_WEEKDAYS[weekday - 1],
                 style = MaterialTheme.typography.labelMedium,
-                color = if (isToday) palette.onAccentWash else palette.textSecondary,
+                color = if (isToday) palette.onAccent else palette.textSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             // The second line is always present so every header keeps the same height.
             Text(
-                if (isToday) "今天" else " ",
+                dateLabel ?: if (isToday) "今天" else " ",
                 style = MaterialTheme.typography.labelSmall,
-                color = palette.onAccentWash,
+                color = if (isToday) palette.onAccent.copy(alpha = 0.85f) else palette.textTertiary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -845,13 +876,23 @@ private fun DayColumn(
                     onCourse = onCourse,
                     modifier = Modifier.fillMaxWidth().height(blockHeight(block.span))
                 )
+                // An empty slot is a dash rather than a filled block: the grid then reads as the
+                // courses it holds, and a free period stops competing with them for attention.
                 is TimetableBlock.Free -> Box(
                     Modifier.fillMaxWidth().height(GridCellHeight)
-                        .background(
-                            if (isToday) palette.accentWash.copy(alpha = 0.45f) else palette.muted.copy(alpha = 0.55f),
-                            CampusRadius.smShape
-                        )
-                )
+                        .then(
+                            if (isToday) Modifier.background(palette.accentWash.copy(alpha = 0.35f), RoundedCornerShape(GridCellCorner))
+                            else Modifier
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "—",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = palette.textTertiary.copy(alpha = 0.5f),
+                        maxLines = 1
+                    )
+                }
             }
         }
     }
@@ -898,10 +939,10 @@ internal fun gridContentWidth(dayCount: Int, availableWidth: Dp): Dp {
 }
 
 /**
- * The 节次 gutter label for one row: that period's own number, the same number
- * [TimetableCourse.periodLabel] prints for the period it starts at.
+ * The 节次 gutter label for one row: the period's own number, written the way
+ * [TimetableCourse.periodLabel] writes it for a course that starts here.
  */
-internal fun gutterPeriodLabel(period: Int): String = "$period"
+internal fun gutterPeriodLabel(period: Int): String = "第${period}节"
 
 /**
  * How many lines a course name gets in a week of this many columns.
@@ -926,39 +967,51 @@ private fun CourseCell(
     onCourse: (TimetableCourse) -> Unit,
     modifier: Modifier
 ) {
-    Row(
+    Column(
         modifier
-            .background(tint.fill, CampusRadius.smShape)
+            .background(tint.fill, RoundedCornerShape(GridCellCorner))
             .clickable(role = Role.Button, onClick = { onCourse(course) })
-            .padding(vertical = 5.dp)
+            .padding(horizontal = 6.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        Box(Modifier.width(3.dp).fillMaxHeight().background(tint.rule, CampusRadius.pillShape))
-        Column(
-            Modifier.weight(1f).padding(start = 4.dp, end = 3.dp),
-            verticalArrangement = Arrangement.spacedBy(1.dp)
-        ) {
-            Text(
-                course.name,
-                // One step below body text: a five-day week leaves about 16 characters of width per
-                // cell, which is three per line at this size rather than one. The line count follows
-                // the column width, so a seven-column cell stops at two lines instead of stacking
-                // four and losing the name to the ellipsis.
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, lineHeight = 11.sp),
-                color = tint.ink,
-                fontWeight = FontWeight.Medium,
-                maxLines = dayNameMaxLines(dayCount, course.periodSpan),
-                overflow = TextOverflow.Ellipsis
-            )
-            if (course.room.isNotBlank()) {
-                Text(
-                    course.room,
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp, lineHeight = 10.sp),
-                    color = tint.ink.copy(alpha = 0.78f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
+        Text(
+            course.name,
+            // One step below body text: a five-day week leaves about 16 characters of width per
+            // cell, which is three per line at this size rather than one. The line count follows
+            // the column width, so a seven-column cell stops at two lines instead of stacking
+            // four and losing the name to the ellipsis.
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, lineHeight = 12.sp),
+            color = tint.ink,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = dayNameMaxLines(dayCount, course.periodSpan),
+            overflow = TextOverflow.Ellipsis
+        )
+        // Where and who, in that order — the two things a student looks a course up for. A blank
+        // field loses its line entirely rather than leaving an icon with nothing after it.
+        CourseCellLine(Icons.Outlined.Place, course.room, tint, dayCount)
+        CourseCellLine(Icons.Outlined.Person, course.teacher, tint, dayCount)
+    }
+}
+
+/** One icon + value line inside a course cell; draws nothing when the value is blank. */
+@Composable
+private fun CourseCellLine(icon: ImageVector, value: String, tint: CourseTint, dayCount: Int) {
+    if (value.isBlank()) return
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            icon,
+            contentDescription = null,
+            modifier = Modifier.size(10.dp),
+            tint = tint.ink.copy(alpha = 0.7f)
+        )
+        Spacer(Modifier.width(2.dp))
+        Text(
+            value,
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, lineHeight = 11.sp),
+            color = tint.ink.copy(alpha = 0.8f),
+            maxLines = if (dayCount >= GridCompactDayCount) 1 else 2,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 

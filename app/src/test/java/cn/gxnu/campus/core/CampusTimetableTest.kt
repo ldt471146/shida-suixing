@@ -83,6 +83,15 @@ class CampusTimetableTest {
         assertEquals("14:00-16:15", timetable.timeSpanOf(marxism))
     }
 
+    /** 这门课最早第 2 周才开始，所以「第一周有课」不是第 1 周。 */
+    @Test
+    fun `the first week with classes is where a fresh timetable should open`() {
+        val timetable = imported()
+        assertEquals(2, timetable.firstWeekWithCourses)
+        assertTrue(timetable.coursesInWeek(2).isNotEmpty())
+        assertTrue(timetable.coursesInWeek(1).isEmpty())
+    }
+
     /** 单双周：一门单周课不许出现在双周，缺了这条会静默显示错课。 */
     @Test
     fun `an odd week course is absent from an even week`() {

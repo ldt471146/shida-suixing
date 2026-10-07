@@ -38,11 +38,11 @@ class TimetableGridFitTest {
     // -----------------------------------------------------------------------------------------
 
     @Test
-    fun aFiveDayWeekIsPixelForPixelWhatItWasBefore() {
-        // 改动前的 5 天档位是 share = (312 - 30 - 3*6) / 5 = 52.8dp，本次改动把它原样搬进
-        // dayColumnWidth 的第二个分支，没有加任何上下限，所以两边的结果逐像素相同。
-        assertWidth(52.8.dp, dayColumnWidth(5, content360), "5 天列宽必须与改动前一致")
-        assertWidth(309.dp, gridContentWidth(5, content360), "5 天网格总宽必须与改动前一致")
+    fun aFiveDayWeekTakesTheEqualShareOfTheCard() {
+        // 节次栏加宽到 58dp（要放下「第13节」和它下面的时间）之后，5 天档位是
+        // share = (312 - 58 - 4*6) / 5 = 46.0dp。这一档仍然没有上下限，取的就是均分。
+        assertWidth(46.dp, dayColumnWidth(5, content360), "5 天列宽应是均分")
+        assertWidth(308.dp, gridContentWidth(5, content360), "5 天网格总宽应随之变化")
     }
 
     @Test
@@ -51,10 +51,10 @@ class TimetableGridFitTest {
             "5 天不得溢出：${gridContentWidth(5, content360)} > $content360",
             gridContentWidth(5, content360) <= content360
         )
-        // 铺满：只余一个间隙的余量，不是被上限掐住的一半宽卡片。
+        // 铺满：只余一个间隙的余量（那一个间隙是刻意留在右边缘的），不是被上限掐住的一半宽卡片。
         assertTrue(
             "5 天应铺满卡片，还空着 ${content360 - gridContentWidth(5, content360)}",
-            content360 - gridContentWidth(5, content360) < CampusSpace.xs
+            content360 - gridContentWidth(5, content360) <= CampusSpace.xs
         )
         assertTrue(gridContentWidth(5, content411) <= content411)
     }
@@ -140,8 +140,8 @@ class TimetableGridFitTest {
     @Test
     fun thePeriodGutterShowsThePeriodNumberItself() {
         // 节次栏回到只显示 1..13：第一行与最后一行都是自己的号码，没有别的文案。
-        assertEquals("1", gutterPeriodLabel(1))
-        assertEquals("13", gutterPeriodLabel(13))
+        assertEquals("第1节", gutterPeriodLabel(1))
+        assertEquals("第13节", gutterPeriodLabel(13))
     }
 
     // -----------------------------------------------------------------------------------------

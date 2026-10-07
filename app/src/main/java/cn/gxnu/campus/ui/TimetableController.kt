@@ -419,13 +419,16 @@ class TimetableController internal constructor(
         val weekCount = timetable?.weekCount ?: 1
         val current = termStart?.let { TimetableCalendar.weekOf(today(), it) }?.coerceIn(1, weekCount) ?: 1
         val selected = if (timetable == null) 1 else selectedWeek.coerceIn(1, weekCount)
+        // A fresh timetable opens on the current week; an unchanged one keeps the browsed week.
+        // Without a term start there is no "current week", and week 1 is usually before the term —
+        // so open on the first week that actually has classes instead of an empty grid.
+        val opening = if (timetable != null && termStart == null) timetable.firstWeekWithCourses else current
         return copy(
             timetable = timetable,
             weekCount = weekCount,
             currentWeek = current,
             termStartEpochDay = termStart,
-            // A fresh timetable opens on the current week; an unchanged one keeps the browsed week.
-            selectedWeek = if (timetable != this.timetable) current else selected,
+            selectedWeek = if (timetable != this.timetable) opening else selected,
             todayWeekday = TimetableCalendar.weekdayOf(today())
         )
     }

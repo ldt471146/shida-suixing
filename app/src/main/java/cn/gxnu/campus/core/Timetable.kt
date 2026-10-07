@@ -90,6 +90,14 @@ data class Timetable(
     /** The last teaching week any course reaches, so the week switcher never offers an empty tail. */
     val weekCount: Int get() = courses.maxOfOrNull { it.endWeek }?.coerceIn(1, TIMETABLE_MAX_WEEKS) ?: 1
 
+    /**
+     * The first week anything is actually taught. A term rarely starts on week 1 — the school's own
+     * list usually begins at week 2 or 3 — so opening on week 1 shows an empty grid and reads as
+     * "the timetable did not arrive".
+     */
+    val firstWeekWithCourses: Int
+        get() = courses.minOfOrNull { it.startWeek }?.coerceIn(1, weekCount) ?: 1
+
     /** The distinct courses taught in [week], in timetable order. */
     fun coursesInWeek(week: Int): List<TimetableCourse> =
         courses.filter { it.runsInWeek(week) }.sortedWith(compareBy({ it.weekday }, { it.startPeriod }))

@@ -96,6 +96,19 @@ class TimetableControllerTest {
         assertTrue(state.state.value.message!!.contains("7 门课"))
     }
 
+    /**
+     * 这学期最早的一门课从第 2 周开始。没有开学日期时「当前周」无从谈起，停在第 1 周会让用户
+     * 看到一张空网格，以为课表没取回来。
+     */
+    @Test
+    fun `a freshly fetched timetable opens on a week that actually has classes`() {
+        val state = controller()
+        state.signIn("2026010039", "20031125", remember = false)
+
+        assertEquals(2, state.state.value.selectedWeek)
+        assertTrue(state.state.value.timetable!!.coursesInWeek(2).isNotEmpty())
+    }
+
     @Test
     fun `a refused login says why and leaves no timetable behind`() {
         val source = FakeSource(signInResult = CampusTimetableApi.SignIn.Failed("学号或密码不正确。"))
