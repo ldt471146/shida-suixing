@@ -20,12 +20,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 data class TimetableUiState(
     val restoring: Boolean = true,
@@ -56,6 +58,12 @@ interface TimetableActions {
     fun saveApiKey(value: String)
     fun clearApiKey()
     fun retry()
+
+    /**
+     * Stops a recognition that is in flight. The picked image is kept, so 重新识别 can start over
+     * without asking the user to choose the photo again.
+     */
+    fun cancelRecognition()
     fun deleteTimetable()
     fun clearMessage(expectedId: Long? = null)
     fun selectWeek(week: Int)
@@ -77,7 +85,8 @@ class TimetableController internal constructor(
     private val scope: CoroutineScope,
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val builtInKey: String = "",
-    private val today: () -> LocalDate = { LocalDate.now() }
+    private val today: () -> LocalDate = { LocalDate.now() },
+    private val recognitionTimeoutMillis: Long = DEFAULT_RECOGNITION_TIMEOUT_MILLIS
 ) : TimetableActions {
 
     private val mutableState = MutableStateFlow(TimetableUiState(builtInKey = builtInKey.isNotBlank()))
@@ -85,6 +94,9 @@ class TimetableController internal constructor(
 
     private var pendingImage: TimetableImage? = null
     private var messageId = 0L
+
+    /** The recognition currently in flight, so it can be cancelled and so it can be replaced. */
+    private var recognition: Job? = null
 
     /** Reads the saved timetable, term start and key hint; the empty state is a normal outcome. */
     fun restore() {
@@ -229,12 +241,28 @@ class TimetableController internal constructor(
     }
 
     private fun recognize(image: TimetableImage) {
-        if (mutableState.value.recognizing) return
+        // Replacing a live request would leave the first one's answer to land on top of the second's.
+        if (recognition?.isActive == true) return
         mutableState.value = mutableState.value.copy(recognizing = true, failure = null, message = null)
-        scope.launch {
-            val outcome = withContext(dispatcher) { attempt(image) }
+        recognition = scope.launch {
+            val outcome = try {
+                // The watchdog is the last resort behind the visible 取消 button: it bounds how long
+                // a stalled request can keep the screen in its busy state.
+                withTimeoutOrNull(recognitionTimeoutMillis) { withContext(dispatcher) { attempt(image) } }
+            } catch (cancelled: CancellationException) {
+                // cancelRecognition() has already published the cancelled state.
+                throw cancelled
+            } catch (_: Exception) {
+                Outcome.Refused(null, "识别失败，请检查网络后重试。")
+            }
             val current = mutableState.value
             mutableState.value = when (outcome) {
+                null -> current.copy(
+                    recognizing = false,
+                    failure = null,
+                    message = "识别用时过长，已自动停止，请重试。",
+                    messageId = ++messageId
+                )
                 is Outcome.Recognized -> current.withTimetable(outcome.timetable, current.termStartEpochDay).copy(
                     recognizing = false,
                     failure = null,
@@ -250,6 +278,18 @@ class TimetableController internal constructor(
                 )
             }
         }
+    }
+
+    override fun cancelRecognition() {
+        recognition?.cancel()
+        recognition = null
+        if (!mutableState.value.recognizing) return
+        mutableState.value = mutableState.value.copy(
+            recognizing = false,
+            failure = null,
+            message = "已取消识别，可以换一张图片重新开始。",
+            messageId = ++messageId
+        )
     }
 
     private suspend fun attempt(image: TimetableImage): Outcome {
@@ -308,6 +348,14 @@ class TimetableController internal constructor(
         val keyUnreadable: Boolean,
         val termStart: Long?
     )
+
+    companion object {
+        /**
+         * Longer than the transport's own read timeout, so the watchdog only ever fires on a request
+         * that has genuinely stalled instead of racing the socket.
+         */
+        const val DEFAULT_RECOGNITION_TIMEOUT_MILLIS = 90_000L
+    }
 }
 
 /**

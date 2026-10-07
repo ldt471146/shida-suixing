@@ -66,8 +66,9 @@ class TimetableVisionClientTest {
         assertEquals("application/json", request.headers["Content-Type"])
 
         val body = JsonParser.parseString(String(request.body, Charsets.UTF_8)).asJsonObject
-        assertEquals("deepseek-v4.1-flash", body.get("model").asString)
-        assertEquals("high", body.get("reasoning_effort").asString)
+        assertEquals("glm-5v-turbo", body.get("model").asString)
+        // The default route answers directly, so no reasoning budget is requested of it.
+        assertNull(body.get("reasoning_effort"))
         assertEquals("json_object", body.getAsJsonObject("response_format").get("type").asString)
         assertEquals(0, body.get("temperature").asInt)
         assertEquals(8192, body.get("max_tokens").asInt)
@@ -82,6 +83,11 @@ class TimetableVisionClientTest {
         val systemPrompt = system.get("content").asString
         assertTrue("json mode needs the word json in the prompt", systemPrompt.contains("json"))
         assertTrue("the example must show every field it asks for", systemPrompt.contains("parity"))
+        // Naming both axes is what carries the accuracy, so the prompt must keep asking for them.
+        assertTrue(systemPrompt.contains("day_headers"))
+        assertTrue(systemPrompt.contains("period_labels"))
+        assertTrue("the school's own period labels must be spelled out", systemPrompt.contains("下午6"))
+        assertTrue("an unnumbered row has to map to period 0", systemPrompt.contains("无节次"))
 
         val user = messages[1].asJsonObject
         assertEquals("user", user.get("role").asString)
@@ -194,6 +200,51 @@ class TimetableVisionClientTest {
         assertEquals(TimetableVisionFailure.NO_NETWORK, failure.failure)
     }
 
+    /** Answers each request in turn, recording every body so the fallback ladder can be inspected. */
+    private class SequencedTransport(private val responses: List<() -> VisionHttpResponse>) : VisionHttpTransport {
+        val bodies = mutableListOf<JsonObject>()
+        override suspend fun post(request: VisionHttpRequest): VisionHttpResponse {
+            bodies += JsonParser.parseString(String(request.body, Charsets.UTF_8)).asJsonObject
+            return responses[minOf(bodies.size - 1, responses.size - 1)]()
+        }
+    }
+
+    private fun modelOf(body: JsonObject) = body.get("model").asString
+
+    @Test fun anEmptyAnswerFromTheDefaultModelIsRetriedOnTheSecondOne() = runTest {
+        val transport = SequencedTransport(
+            listOf(
+                // The route the default model takes on a dense real timetable: the whole output budget
+                // goes to reasoning and the user-visible content comes back empty.
+                { VisionHttpResponse(200, envelope("")) },
+                { VisionHttpResponse(200, envelope(VALID_PAYLOAD)) }
+            )
+        )
+        val timetable = client(transport).recognize(image(), KEY)
+
+        assertEquals(listOf("glm-5v-turbo", "deepseek-v4.1-flash"), transport.bodies.map(::modelOf))
+        // Only the deepseek route advertises a reasoning budget, so only it may ask for one.
+        assertNull(transport.bodies[0].get("reasoning_effort"))
+        assertEquals("high", transport.bodies[1].get("reasoning_effort").asString)
+        assertEquals(2, timetable.courseCount)
+    }
+
+    @Test fun aVerdictFromTheDefaultModelIsNotSecondGuessed() = runTest {
+        val notATimetable = """{"is_timetable":false,"term":"","courses":[]}"""
+        val transport = SequencedTransport(listOf({ VisionHttpResponse(200, envelope(notATimetable)) }))
+
+        assertEquals(TimetableVisionFailure.NOT_A_TIMETABLE, refusal(client(transport)).failure)
+        assertEquals("a model that looked and answered is believed", 1, transport.bodies.size)
+    }
+
+    @Test fun aTransportFailureIsNotRetriedOnAnotherModel() = runTest {
+        val transport = SequencedTransport(listOf({ throw IOException("fixture offline") }))
+
+        assertEquals(TimetableVisionFailure.NO_NETWORK, refusal(client(transport)).failure)
+        // A dead network would fail the second upload exactly the same way, so it is not attempted.
+        assertEquals(1, transport.bodies.size)
+    }
+
     @Test fun anImageTheEndpointWouldRefuseIsNeverUploaded() = runTest {
         val transport = RecordingTransport { VisionHttpResponse(200, envelope(VALID_PAYLOAD)) }
         val failure = refusalWith(client(transport), image(mimeType = "image/bmp"))
@@ -255,7 +306,7 @@ class TimetableVisionClientTest {
 
     private companion object {
         const val KEY = "sk-fixture-key"
-        const val MODEL = "deepseek-v4.1-flash"
+        const val MODEL = HttpTimetableVisionClient.MODEL
         const val FIXED_TIME = 1_700_000_000_000L
         const val BASE_URL = "https://vision.example.test/v1"
         const val ENDPOINT = "$BASE_URL/chat/completions"

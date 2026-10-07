@@ -82,6 +82,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
@@ -96,11 +100,13 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import cn.gxnu.campus.core.TIMETABLE_PERIOD_NONE
 import cn.gxnu.campus.core.TIMETABLE_WEEKDAYS
 import cn.gxnu.campus.core.Timetable
 import cn.gxnu.campus.core.TimetableBlock
@@ -133,11 +139,28 @@ private val GridCellHeight = 66.dp
 private val GridCellGap = 3.dp
 private val GridPeriodWidth = 30.dp
 private val GridHeaderHeight = 42.dp
-// Five day columns share the card width between them, so a normal week never needs scrolling. The
-// floor is what keeps a four-character course name from breaking one character per line; the ceiling
-// stops a two-day week from stretching across the whole card.
+// Five day columns take an exact equal share of the card and never scroll: the ordinary week has to
+// stay exactly as it was. A shorter week keeps a floor and a ceiling instead, so it neither breaks a
+// four-character course name one character per line nor stretches across the whole card.
 private val GridDayMinWidth = 68.dp
 private val GridDayMaxWidth = 112.dp
+// Six and seven column weeks give up the equal share for a readable column and scroll sideways
+// instead: seven columns divided evenly on a 360dp phone come to about 37dp each, narrow enough that
+// a twelve-character course name shows two characters of itself. A column that scrolls beats a column
+// that fits and says nothing.
+private const val GridCompactDayCount = 6
+private val GridDayCompactMinWidth = 56.dp
+// The column count from which the columns take the plain equal share of the card.
+private const val GridSharedDayCount = 5
+// A compact week saves lines, not width: two lines and an ellipsis instead of four, so a name never
+// stacks one character per line.
+private const val GridCompactNameMaxLines = 2
+private const val GridSpanningNameMaxLines = 4
+private const val GridSingleNameMaxLines = 3
+// The width of the right-edge fade that says the grid keeps going past the card border.
+private val GridScrollFadeWidth = 20.dp
+// The 无节次 row: a course the recognition placed in no 节次 at all still needs a row to be drawn in.
+private const val GridNoPeriodLabel = "无节次"
 // A cell is a fixed 66dp tall, so a name past ~1.3x would grow out of its row and overlap the next
 // one. Only the grid caps its own text scale; the rest of the screen keeps the system setting.
 private const val GridMaxFontScale = 1.3f
@@ -146,8 +169,9 @@ private const val GridMaxFontScale = 1.3f
 private val PreviewImageMaxHeight = 320.dp
 // Label columns are stated in sp rather than dp so they grow with the font scale instead of
 // ellipsising a real value ("11-12", "上课时间") once the user turns the text size up. Every row of a
-// list shares one width, so the column beside it stays aligned from row to row.
-private val TodayPeriodColumnWidth = 46.sp
+// list shares one width, so the column beside it stays aligned from row to row. The 今日 period
+// column holds a whole label now — "第3-4节", "无节次" — so it is sized for the widest of them.
+private val TodayPeriodColumnWidth = 56.sp
 private val DetailLabelColumnWidth = 72.sp
 
 /**
@@ -270,16 +294,20 @@ fun TimetableScreen(
         }
         // Once a timetable is on screen the photo has done its job, so it stops taking up the top of
         // the page. It stays visible while a recognition runs, before the first success, and after a
-        // failure — the three moments when seeing which image was sent actually matters.
-        val showPreview = preview != null &&
-            (preparing || state.recognizing || timetable == null || state.failure != null)
+        // failure — the three moments when seeing which image was sent actually matters. A running
+        // recognition keeps the card even when this composition holds no decoded bitmap (a rotation
+        // drops the one above): the card is where 取消 lives, and a page that is waiting on a
+        // 40-90 second request must never be left with no way out of it.
+        val showPreview = state.recognizing ||
+            (preview != null && (preparing || timetable == null || state.failure != null))
         if (showPreview) {
             item {
                 PreviewCard(
                     preview = preview,
                     preparing = preparing,
                     recognizing = state.recognizing,
-                    failed = state.failure != null
+                    failed = state.failure != null,
+                    onCancel = actions::cancelRecognition
                 )
             }
         }
@@ -630,16 +658,16 @@ private fun TodayCourseRow(course: TimetableCourse, tint: CourseTint, onClick: (
         Box(Modifier.width(3.dp).height(36.dp).background(tint.rule, CampusRadius.pillShape))
         Spacer(Modifier.width(CampusSpace.md))
         val periodWidth = with(LocalDensity.current) { TodayPeriodColumnWidth.toDp() }
-        Column(Modifier.width(periodWidth), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-            Text(
-                periodRange(course),
-                style = MaterialTheme.typography.labelLarge,
-                color = tint.ink,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text("节", style = MaterialTheme.typography.labelSmall, color = palette.textTertiary)
-        }
+        // One line, and the whole label off the course itself: splitting it into a bare "3" plus a
+        // "节" underneath would leave a 无节次 course showing a stray 节 under a number it has not got.
+        Text(
+            course.periodLabel,
+            modifier = Modifier.width(periodWidth),
+            style = MaterialTheme.typography.labelLarge,
+            color = tint.ink,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
         Spacer(Modifier.width(CampusSpace.sm))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
@@ -690,7 +718,8 @@ private fun WeekGridCard(
                 SectionLabel("周课表")
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "${grid.days.size} 天 · 第 ${grid.periods.size} 节",
+                    // The 无节次 row is a row, not a 节次, so it never counts towards the period total.
+                    "${grid.days.size} 天 · 第 ${grid.periods.count { it != TIMETABLE_PERIOD_NONE }} 节",
                     style = MaterialTheme.typography.bodySmall,
                     color = palette.textTertiary
                 )
@@ -707,12 +736,7 @@ private fun WeekGridCard(
             } else {
                 BoxWithConstraints(Modifier.fillMaxWidth()) {
                     val dayCount = grid.days.size.coerceAtLeast(1)
-                    val usable = maxWidth - GridPeriodWidth - GridCellGap * (dayCount + 1)
-                    // A five-day week is the normal case and must never scroll, so its columns take
-                    // an exact equal share. A shorter week earns the wider floor, capped so it does
-                    // not stretch across the card.
-                    val share = usable / dayCount
-                    val dayWidth = if (dayCount >= 5) share else share.coerceIn(GridDayMinWidth, GridDayMaxWidth)
+                    val dayWidth = dayColumnWidth(dayCount, maxWidth)
                     val density = LocalDensity.current
                     val gridDensity = remember(density) {
                         if (density.fontScale > GridMaxFontScale) Density(density.density, GridMaxFontScale)
@@ -721,42 +745,62 @@ private fun WeekGridCard(
                     // The cap is scoped to the grid rows alone: the columns keep the real density, so
                     // widths do not move, and only the text stops growing out of its fixed cell.
                     CompositionLocalProvider(LocalDensity provides gridDensity) {
-                        Column(verticalArrangement = Arrangement.spacedBy(GridCellGap)) {
-                            Row(Modifier.horizontalScroll(horizontal)) {
-                                Spacer(Modifier.width(GridPeriodWidth))
-                                grid.days.forEach { day ->
-                                    Spacer(Modifier.width(GridCellGap))
-                                    DayHeader(
-                                        weekday = day.weekday,
-                                        isToday = showingCurrentWeek && day.weekday == todayWeekday,
-                                        width = dayWidth
+                        // A 6 or 7 day week is wider than the card on purpose, so the grid — and only
+                        // the grid — scrolls sideways inside it. The page keeps scrolling vertically,
+                        // and both rows share one scroll state so the headers stay over their columns.
+                        Box(
+                            Modifier.fillMaxWidth().drawWithContent {
+                                drawContent()
+                                // The fade on the right edge is what says the grid continues past the
+                                // border; it is the card's own fill, so it needs no new colour.
+                                if (horizontal.canScrollForward) {
+                                    val fade = GridScrollFadeWidth.toPx()
+                                    drawRect(
+                                        brush = Brush.horizontalGradient(
+                                            colors = listOf(palette.surface.copy(alpha = 0f), palette.surface),
+                                            startX = size.width - fade,
+                                            endX = size.width
+                                        ),
+                                        topLeft = Offset(size.width - fade, 0f),
+                                        size = Size(fade, size.height)
                                     )
                                 }
                             }
-                            Row(Modifier.horizontalScroll(horizontal)) {
-                                Column(Modifier.width(GridPeriodWidth), verticalArrangement = Arrangement.spacedBy(GridCellGap)) {
-                                    grid.periods.forEach { period ->
-                                        Box(
-                                            Modifier.fillMaxWidth().height(GridCellHeight),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                "$period",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = palette.textTertiary
-                                            )
-                                        }
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(GridCellGap)) {
+                                Row(Modifier.horizontalScroll(horizontal)) {
+                                    Spacer(Modifier.width(GridPeriodWidth))
+                                    grid.days.forEach { day ->
+                                        Spacer(Modifier.width(GridCellGap))
+                                        DayHeader(
+                                            weekday = day.weekday,
+                                            isToday = showingCurrentWeek && day.weekday == todayWeekday,
+                                            width = dayWidth
+                                        )
                                     }
                                 }
-                                grid.days.forEach { day ->
-                                    Spacer(Modifier.width(GridCellGap))
-                                    DayColumn(
-                                        day = day,
-                                        width = dayWidth,
-                                        isToday = showingCurrentWeek && day.weekday == todayWeekday,
-                                        slots = slots,
-                                        onCourse = onCourse
-                                    )
+                                Row(Modifier.horizontalScroll(horizontal)) {
+                                    Column(Modifier.width(GridPeriodWidth), verticalArrangement = Arrangement.spacedBy(GridCellGap)) {
+                                        grid.periods.forEach { period ->
+                                            Box(
+                                                Modifier.fillMaxWidth().height(GridCellHeight),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                PeriodGutterLabel(period)
+                                            }
+                                        }
+                                    }
+                                    grid.days.forEach { day ->
+                                        Spacer(Modifier.width(GridCellGap))
+                                        DayColumn(
+                                            day = day,
+                                            width = dayWidth,
+                                            dayCount = dayCount,
+                                            isToday = showingCurrentWeek && day.weekday == todayWeekday,
+                                            slots = slots,
+                                            onCourse = onCourse
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -765,6 +809,27 @@ private fun WeekGridCard(
             }
         }
     }
+}
+
+/** The 节次 gutter label: a number, or 无节次 wrapped onto two lines in a gutter this narrow. */
+@Composable
+private fun PeriodGutterLabel(period: Int) {
+    val palette = LocalCampusPalette.current
+    val noPeriod = period == TIMETABLE_PERIOD_NONE
+    Text(
+        gutterPeriodLabel(period),
+        // The gutter is 30dp wide, so 无节次 is set a step smaller than the digits beside it and is
+        // allowed to wrap onto two lines rather than ellipsise away its last character once the
+        // user turns the font scale up.
+        style = MaterialTheme.typography.labelSmall.copy(
+            fontSize = if (noPeriod) 8.sp else 11.sp,
+            lineHeight = if (noPeriod) 10.sp else 14.sp
+        ),
+        color = palette.textTertiary,
+        textAlign = TextAlign.Center,
+        maxLines = if (noPeriod) 2 else 1,
+        overflow = TextOverflow.Ellipsis
+    )
 }
 
 @Composable
@@ -804,6 +869,7 @@ private fun DayHeader(weekday: Int, isToday: Boolean, width: Dp) {
 private fun DayColumn(
     day: TimetableDay,
     width: Dp,
+    dayCount: Int,
     isToday: Boolean,
     slots: Map<TimetableCourse, Int>,
     onCourse: (TimetableCourse) -> Unit
@@ -815,6 +881,7 @@ private fun DayColumn(
                 is TimetableBlock.Course -> CourseCell(
                     course = block.course,
                     tint = tintAt(palette, slots[block.course] ?: 0),
+                    dayCount = dayCount,
                     onCourse = onCourse,
                     modifier = Modifier.fillMaxWidth().height(blockHeight(block.span))
                 )
@@ -833,10 +900,71 @@ private fun DayColumn(
 /** A course spanning n periods occupies exactly n rows plus the gaps it covers. */
 private fun blockHeight(span: Int): Dp = GridCellHeight * span + GridCellGap * (span - 1)
 
+/**
+ * How wide one weekday column is once [dayCount] columns share [availableWidth] of card content.
+ *
+ * Five columns take an exact equal share, which is what makes the ordinary week fill the card with no
+ * sideways scroll at all. Six and seven columns instead stand on [GridDayCompactMinWidth] and scroll
+ * the grid: dividing 360dp evenly between seven columns leaves ~37dp each, and a course name that
+ * narrow reads two characters at a time, so this grid trades the fit for the name. Four columns and
+ * fewer keep their floor and ceiling, so a short week neither breaks a four-character name one
+ * character per line nor stretches across the whole card; the ceiling follows the available width, so
+ * it is never the cap that pushes the grid past the card.
+ */
+internal fun dayColumnWidth(dayCount: Int, availableWidth: Dp): Dp {
+    val days = dayCount.coerceAtLeast(1)
+    val share = dayColumnsWidth(days, availableWidth) / days
+    return when {
+        days >= GridCompactDayCount -> share.coerceAtLeast(GridDayCompactMinWidth)
+        days >= GridSharedDayCount -> share
+        // The floor is deliberately hard: on a 360dp phone a four-day week divides to 66.75dp, which
+        // is below it, so that grid stays 2dp wider than its card rather than squeezing the name.
+        else -> share.coerceAtMost(GridDayMaxWidth).coerceAtLeast(GridDayMinWidth)
+    }
+}
+
+/** The width every weekday column shares between them: the card minus the 节次 gutter and the gaps. */
+internal fun dayColumnsWidth(dayCount: Int, availableWidth: Dp): Dp {
+    val days = dayCount.coerceAtLeast(1)
+    // The extra gap is deliberate slack on the right edge: it keeps the grid from ending flush
+    // against the card border and absorbs the sub-pixel rounding of banking the columns on integers.
+    return (availableWidth - GridPeriodWidth - GridCellGap * (days + 1)).coerceAtLeast(0.dp)
+}
+
+/** The whole grid including its 节次 gutter, so a caller can check it still fits [availableWidth]. */
+internal fun gridContentWidth(dayCount: Int, availableWidth: Dp): Dp {
+    val days = dayCount.coerceAtLeast(1)
+    return GridPeriodWidth + dayColumnWidth(days, availableWidth) * days + GridCellGap * days
+}
+
+/**
+ * The 节次 gutter label for one row. [TIMETABLE_PERIOD_NONE] is the 无节次 row — a course the
+ * recognition placed in no 节次 — and every other row shows its own number. The wording matches
+ * [TimetableCourse.periodLabel], which is the same label for a whole course.
+ */
+internal fun gutterPeriodLabel(period: Int): String =
+    if (period == TIMETABLE_PERIOD_NONE) GridNoPeriodLabel else "$period"
+
+/**
+ * How many lines a course name gets in a week of this many columns.
+ *
+ * A compact week (six or seven columns) is the one that scrolls, and its cell is the one that has to
+ * give something up: three lines there break a name into one character per line, so it takes two and
+ * ellipsises the rest. The line count cannot follow the column width any more — a 56dp scrolling
+ * column is *wider* than a 52.8dp five-column one, so no width threshold would separate them.
+ * Anywhere else a cell spanning two periods earns the extra line its height already pays for.
+ */
+internal fun dayNameMaxLines(dayCount: Int, periodSpan: Int): Int = when {
+    dayCount >= GridCompactDayCount -> GridCompactNameMaxLines
+    periodSpan >= 2 -> GridSpanningNameMaxLines
+    else -> GridSingleNameMaxLines
+}
+
 @Composable
 private fun CourseCell(
     course: TimetableCourse,
     tint: CourseTint,
+    dayCount: Int,
     onCourse: (TimetableCourse) -> Unit,
     modifier: Modifier
 ) {
@@ -854,11 +982,13 @@ private fun CourseCell(
             Text(
                 course.name,
                 // One step below body text: a five-day week leaves about 16 characters of width per
-                // cell, which is three per line at this size rather than one.
+                // cell, which is three per line at this size rather than one. The line count follows
+                // the column width, so a seven-column cell stops at two lines instead of stacking
+                // four and losing the name to the ellipsis.
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, lineHeight = 11.sp),
                 color = tint.ink,
                 fontWeight = FontWeight.Medium,
-                maxLines = if (course.periodSpan >= 2) 4 else 3,
+                maxLines = dayNameMaxLines(dayCount, course.periodSpan),
                 overflow = TextOverflow.Ellipsis
             )
             if (course.room.isNotBlank()) {
@@ -879,7 +1009,13 @@ private fun CourseCell(
 // ---------------------------------------------------------------------------------------------
 
 @Composable
-private fun PreviewCard(preview: Bitmap?, preparing: Boolean, recognizing: Boolean, failed: Boolean) {
+private fun PreviewCard(
+    preview: Bitmap?,
+    preparing: Boolean,
+    recognizing: Boolean,
+    failed: Boolean,
+    onCancel: () -> Unit
+) {
     val palette = LocalCampusPalette.current
     CampusCard {
         Column(Modifier.padding(CampusSpace.lg), verticalArrangement = Arrangement.spacedBy(CampusSpace.md)) {
@@ -929,6 +1065,11 @@ private fun PreviewCard(preview: Bitmap?, preparing: Boolean, recognizing: Boole
                     )
                 }
             }
+            // A recognition can run for a minute or more. The cancel action sits with the progress it
+            // stops, not in 课表管理, because the wait is what the user is looking at.
+            if (recognizing) {
+                OutlinedActionButton("取消", Icons.Outlined.Close, onCancel, Modifier.fillMaxWidth())
+            }
         }
     }
 }
@@ -969,7 +1110,7 @@ private fun EmptyTimetableCard(onPick: () -> Unit, onShoot: (() -> Unit)?, busy:
                     modifier = Modifier.weight(1f)
                 )
                 if (onShoot != null) {
-                    OutlinedActionButton("拍照", Icons.Outlined.PhotoCamera, onShoot, Modifier.weight(1f))
+                    OutlinedActionButton("拍照", Icons.Outlined.PhotoCamera, onShoot, Modifier.weight(1f), enabled = !busy)
                 }
             }
         }
@@ -1508,9 +1649,6 @@ private fun tintFor(
     val slots = timetable?.let { TimetableCourseSlots.assign(it.courses, COURSE_TINT_COUNT) }
     return tintAt(palette, slots?.get(course) ?: 0)
 }
-
-private fun periodRange(course: TimetableCourse): String =
-    if (course.startPeriod == course.endPeriod) "${course.startPeriod}" else "${course.startPeriod}-${course.endPeriod}"
 
 private fun parityLabel(parity: WeekParity): String = when (parity) {
     WeekParity.ALL -> "每周"

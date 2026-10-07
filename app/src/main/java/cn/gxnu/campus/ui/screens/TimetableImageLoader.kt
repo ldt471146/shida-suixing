@@ -23,21 +23,45 @@ class PreparedTimetableImage(val image: TimetableImage, val preview: Bitmap)
 
 /**
  * Decodes with a power-of-two [BitmapFactory.Options.inSampleSize], stands the pixels upright,
- * scales into the upload box and re-encodes as JPEG. Every blocking step belongs on a background
- * dispatcher; [prepare] touches neither the main thread nor the network.
+ * scales into the upload box and encodes the upload copy — losslessly when the source was a PNG,
+ * otherwise along the JPEG quality ladder. Every blocking step belongs on a background dispatcher;
+ * [prepare] touches neither the main thread nor the network.
  */
 internal object TimetableImageLoader {
 
-    /** Comfortably below the documented 32 MiB single-image ceiling. */
-    private const val MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+    private const val MIME_PNG = "image/png"
+    private const val MIME_JPEG = "image/jpeg"
+
+    /**
+     * The upload budget, derived from the endpoint's own per-image ceiling instead of picked by hand:
+     * the largest payload whose base64 form still fits [VisionImageLimits.MAX_BASE64_BYTES], which is
+     * 24 MiB of bytes inflating to exactly 32 MiB of base64.
+     *
+     * It is deliberately generous. At [VisionImageLimits.TARGET_SIDE_PX] a 4:3 photo is 4096 × 3072 px
+     * and dense text can reach roughly a byte per pixel at q88, so a smaller budget would push ordinary
+     * timetables down to the low-quality rungs — and resolution is precisely what recognition accuracy
+     * was measured to depend on.
+     */
+    const val MAX_UPLOAD_BYTES: Int = VisionImageLimits.MAX_BASE64_BYTES / 4 * 3
 
     /** A source photo is held in memory only long enough to be downsampled; this bounds that hold. */
     private const val MAX_SOURCE_BYTES = 48 * 1024 * 1024
 
     private const val PREVIEW_SIDE_PX = 720
+
+    /** The JPEG ladder. The first rung that fits wins, so quality only drops when it has to. */
     private val JPEG_QUALITIES = intArrayOf(88, 80, 70, 55)
 
-    fun prepare(resolver: ContentResolver, uri: Uri): PreparedTimetableImage {
+    /** One message for every "the phone could not hold these pixels" path. */
+    private const val TOO_LARGE_MESSAGE = "这张图片太大，手机无法处理，请换一张分辨率低一些的照片。"
+
+    /**
+     * What the picked bytes really are. The provider's MIME type is a hint from a picker that may be
+     * wrong or silent, and the endpoint sniffs the payload itself, so the bytes decide here too.
+     */
+    enum class SourceFormat { JPEG, PNG, WEBP, UNKNOWN }
+
+    fun prepare(resolver: ContentResolver, uri: Uri): PreparedTimetableImage = withMemoryGuard {
         // The picked photo is read exactly once. A picker hands out a URI whose stream is expensive
         // to re-open — and may not re-open at all — so every later pass (bounds, EXIF, pixels) works
         // from these bytes rather than asking the provider for the image a second time.
@@ -45,6 +69,7 @@ internal object TimetableImageLoader {
             ?: throw ImagePreparationException("无法打开这张图片，请换一张试试。")
         if (source.isEmpty()) throw ImagePreparationException("这张图片是空的，请换一张试试。")
 
+        val format = sourceFormat(source)
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(source, 0, source.size, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
@@ -60,7 +85,8 @@ internal object TimetableImageLoader {
         // sideways is far harder to read, so the rotation is baked in before anything else.
         val upright = if (rotation == 0) decoded else rotate(decoded, rotation)
         val target = VisionImageLimits.fitInside(upright.width, upright.height, VisionImageLimits.TARGET_SIDE_PX)
-        val scaled = if (target.width == upright.width && target.height == upright.height) {
+        val resized = target.width != upright.width || target.height != upright.height
+        val scaled = if (!resized) {
             upright
         } else {
             try {
@@ -69,12 +95,7 @@ internal object TimetableImageLoader {
                 upright.recycle()
             }
         }
-        val encoded = try {
-            encodeUnderLimit(scaled)
-        } catch (failure: Exception) {
-            scaled.recycle()
-            throw failure
-        }
+        val upload = uploadCopy(source, format, scaled, untouched = rotation == 0 && !resized)
         val preview = if (maxOf(scaled.width, scaled.height) > PREVIEW_SIDE_PX) {
             val boundsForPreview = VisionImageLimits.fitInside(scaled.width, scaled.height, PREVIEW_SIDE_PX)
             try {
@@ -85,7 +106,86 @@ internal object TimetableImageLoader {
         } else {
             scaled
         }
-        return PreparedTimetableImage(TimetableImage(encoded, "image/jpeg"), preview)
+        PreparedTimetableImage(upload, preview)
+    }
+
+    /**
+     * The payload that goes to the endpoint. A PNG source travels losslessly — as its own bytes when
+     * nothing had to be changed, or as a lossless re-encode of the resized pixels when something did —
+     * because JPEG ringing around sharp glyphs is exactly the damage a screenshot must not pick up.
+     * A PNG whose lossless form does not fit the budget falls back to the JPEG ladder, and so does
+     * every other source.
+     */
+    private fun uploadCopy(source: ByteArray, format: SourceFormat, scaled: Bitmap, untouched: Boolean): TimetableImage {
+        val lossless = when {
+            format != SourceFormat.PNG -> null
+            untouched -> source
+            else -> compress(scaled, Bitmap.CompressFormat.PNG, 100)
+        }
+        if (lossless != null && uploadMimeType(format, lossless.size) == MIME_PNG) {
+            return TimetableImage(lossless, MIME_PNG)
+        }
+        val jpeg = encodeJpegUnderLimit(MAX_UPLOAD_BYTES) { quality ->
+            compress(scaled, Bitmap.CompressFormat.JPEG, quality)
+        }
+        return TimetableImage(jpeg, MIME_JPEG)
+    }
+
+    /**
+     * Which encoding the upload copy may be sent as. Only a real PNG source qualifies, and only while
+     * its lossless payload fits [MAX_UPLOAD_BYTES]; past the budget the JPEG ladder's smaller payload
+     * wins, since an upload the endpoint would refuse helps nobody.
+     */
+    fun uploadMimeType(format: SourceFormat, losslessBytes: Int): String =
+        if (format == SourceFormat.PNG && losslessBytes in 1..MAX_UPLOAD_BYTES) MIME_PNG else MIME_JPEG
+
+    /**
+     * What the picked bytes are, read from their magic numbers. Only a PNG earns the lossless path, so
+     * the signature checks are deliberately complete: a truncated signature is [SourceFormat.UNKNOWN]
+     * and takes the JPEG path along with everything else that is not recognised.
+     */
+    fun sourceFormat(bytes: ByteArray): SourceFormat = when {
+        bytes.matchesAt(0, 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A) -> SourceFormat.PNG
+        bytes.matchesAt(0, 0xFF, 0xD8, 0xFF) -> SourceFormat.JPEG
+        // "RIFF" opens a WAV as readily as a WebP; the tag at offset 8 is what makes it an image.
+        bytes.matchesAt(0, 0x52, 0x49, 0x46, 0x46) && bytes.matchesAt(8, 0x57, 0x45, 0x42, 0x50) -> SourceFormat.WEBP
+        else -> SourceFormat.UNKNOWN
+    }
+
+    /**
+     * Walks the JPEG quality ladder and keeps the first rung whose payload fits [limit], so quality is
+     * never cut while the upload still fits — the lower rungs exist for photos that genuinely do not
+     * fit. [encode] produces one rung's payload and is only asked for the rungs that are needed.
+     */
+    fun encodeJpegUnderLimit(limit: Int, encode: (Int) -> ByteArray): ByteArray {
+        var smallest = 0
+        for (quality in JPEG_QUALITIES) {
+            val bytes = encode(quality)
+            if (bytes.isEmpty()) throw ImagePreparationException("图片压缩失败，请换一张试试。")
+            if (bytes.size <= limit) return bytes
+            smallest = bytes.size
+        }
+        throw ImagePreparationException("图片压缩后仍然过大（约 ${smallest / 1024 / 1024} MB），请换一张照片。")
+    }
+
+    /**
+     * Runs [block] and turns an allocation failure into the readable "too large" failure the screen
+     * shows for it. [OutOfMemoryError] is an [Error], not an [Exception], so a phone that cannot hold
+     * the decoded bitmap would otherwise take the process down instead of asking for a smaller photo.
+     */
+    fun <T> withMemoryGuard(block: () -> T): T = try {
+        block()
+    } catch (failure: OutOfMemoryError) {
+        // A constant message: building one here would need the allocation that just failed.
+        throw ImagePreparationException(TOO_LARGE_MESSAGE, failure)
+    }
+
+    private fun ByteArray.matchesAt(offset: Int, vararg expected: Int): Boolean {
+        if (offset < 0 || size < offset + expected.size) return false
+        for (index in expected.indices) {
+            if ((this[offset + index].toInt() and 0xFF) != expected[index]) return false
+        }
+        return true
     }
 
     /** Bounded so a corrupt or absurd source cannot be slurped into memory in one go. */
@@ -95,13 +195,17 @@ internal object TimetableImageLoader {
         while (true) {
             val count = read(buffer)
             if (count < 0) break
-            if (output.size() + count > limit) {
-                throw ImagePreparationException("这张图片太大，手机无法处理，请换一张分辨率低一些的照片。")
-            }
+            if (output.size() + count > limit) throw ImagePreparationException(TOO_LARGE_MESSAGE)
             output.write(buffer, 0, count)
         }
         return output.toByteArray()
     }
+
+    /** Encodes the bitmap; PNG ignores the quality argument and always writes lossless pixels. */
+    private fun compress(bitmap: Bitmap, format: Bitmap.CompressFormat, quality: Int): ByteArray =
+        ByteArrayOutputStream().use { output ->
+            if (!bitmap.compress(format, quality, output)) ByteArray(0) else output.toByteArray()
+        }
 
     /** Halves the decoded size until the long side first fits the upload box. */
     fun sampleSize(width: Int, height: Int, target: Int = VisionImageLimits.TARGET_SIDE_PX): Int {
@@ -154,20 +258,6 @@ internal object TimetableImageLoader {
         }
     } catch (_: Exception) {
         0
-    }
-
-    /** A real JPEG is always produced, so the API's content sniffing never disagrees with us. */
-    private fun encodeUnderLimit(bitmap: Bitmap): ByteArray {
-        var lastSize = 0
-        for (quality in JPEG_QUALITIES) {
-            val bytes = ByteArrayOutputStream().use { output ->
-                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)) ByteArray(0) else output.toByteArray()
-            }
-            if (bytes.isEmpty()) throw ImagePreparationException("图片压缩失败，请换一张试试。")
-            if (bytes.size <= MAX_UPLOAD_BYTES) return bytes
-            lastSize = bytes.size
-        }
-        throw ImagePreparationException("图片压缩后仍然过大（约 ${lastSize / 1024 / 1024} MB），请换一张照片。")
     }
 
     /**

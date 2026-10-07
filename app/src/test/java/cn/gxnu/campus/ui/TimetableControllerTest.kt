@@ -16,8 +16,10 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -68,7 +70,8 @@ class TimetableControllerTest {
         storage: TimetableStorage = MemoryTimetableStorage(),
         keyStorage: CiphertextStorage = MemoryCiphertext(),
         builtInKey: String = "",
-        today: LocalDate = TODAY
+        today: LocalDate = TODAY,
+        timeoutMillis: Long = TimetableController.DEFAULT_RECOGNITION_TIMEOUT_MILLIS
     ) = TimetableController(
         client = client,
         store = TimetableStore(storage),
@@ -78,7 +81,8 @@ class TimetableControllerTest {
         scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler)),
         dispatcher = UnconfinedTestDispatcher(testScheduler),
         builtInKey = builtInKey,
-        today = { today }
+        today = { today },
+        recognitionTimeoutMillis = timeoutMillis
     )
 
     private fun keyVault(apiKey: String): MemoryCiphertext = MemoryCiphertext().also {
@@ -432,6 +436,74 @@ class TimetableControllerTest {
         controller.useImage(IMAGE)
         advanceUntilIdle()
         assertTrue(controller.state.value.canRetry)
+    }
+
+    /** Never answers, so the controller stays in its busy state until something releases it. */
+    private class HangingVisionClient : TimetableVisionClient {
+        var calls = 0
+        override suspend fun recognize(image: TimetableImage, apiKey: String): Timetable {
+            calls++
+            awaitCancellation()
+        }
+    }
+
+    @Test fun cancellingRecognitionFreesTheScreenAndKeepsThePhoto() = runTest {
+        val hanging = HangingVisionClient()
+        val controller = controller(client = hanging, builtInKey = BUILT_IN_KEY)
+        controller.useImage(IMAGE)
+        assertTrue("the screen is busy while the request is in flight", controller.state.value.recognizing)
+
+        controller.cancelRecognition()
+
+        val cancelled = controller.state.value
+        assertFalse("the page must never be left disabled", cancelled.recognizing)
+        assertTrue("the user is told what happened", cancelled.message!!.contains("取消"))
+        assertNull("a cancellation is not a failure of the image", cancelled.failure)
+        assertTrue("换一张 / 重新识别 has to stay available", cancelled.canRetry)
+
+        // The photo is still held, so 重新识别 goes straight back out without a new selection.
+        controller.retry()
+        assertTrue(controller.state.value.recognizing)
+        assertEquals(2, hanging.calls)
+    }
+
+    @Test fun aSecondUploadIsRefusedWhileOneIsAlreadyInFlight() = runTest {
+        val hanging = HangingVisionClient()
+        val controller = controller(client = hanging, builtInKey = BUILT_IN_KEY)
+        controller.useImage(IMAGE)
+        controller.useImage(IMAGE)
+
+        // Two answers racing for the same state is the failure this guard exists to prevent.
+        assertEquals(1, hanging.calls)
+
+        controller.cancelRecognition()
+        controller.useImage(IMAGE)
+        assertEquals("cancelling must release the slot, not keep it", 2, hanging.calls)
+    }
+
+    @Test fun aRecognitionThatOutlivesTheWatchdogReleasesTheScreen() = runTest {
+        val hanging = HangingVisionClient()
+        val controller = controller(client = hanging, builtInKey = BUILT_IN_KEY, timeoutMillis = 5_000)
+        controller.useImage(IMAGE)
+        assertTrue(controller.state.value.recognizing)
+
+        advanceTimeBy(5_001)
+
+        val timedOut = controller.state.value
+        assertFalse(timedOut.recognizing)
+        assertTrue("the user is told why it stopped", timedOut.message!!.contains("过长"))
+        assertEquals(1, hanging.calls)
+    }
+
+    @Test fun cancellingWithNothingInFlightChangesNothing() = runTest {
+        val controller = controller()
+        controller.restore()
+        advanceUntilIdle()
+        val before = controller.state.value
+
+        controller.cancelRecognition()
+
+        assertEquals(before, controller.state.value)
     }
 
     private companion object {

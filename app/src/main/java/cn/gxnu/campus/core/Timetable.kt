@@ -5,6 +5,9 @@ import java.time.LocalDate
 /** Weekday numbering used by the model contract and the grid: 1 = 周一 … 7 = 周日. */
 val TIMETABLE_WEEKDAYS: List<String> = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
+/** 无节次: the line a real timetable prints above 上午1 for courses whose periods are not stated. */
+const val TIMETABLE_PERIOD_NONE = 0
+
 const val TIMETABLE_MAX_COURSES = 200
 const val TIMETABLE_MAX_PERIODS = 20
 const val TIMETABLE_MAX_WEEKS = 30
@@ -27,7 +30,12 @@ data class TimetableCourse(
 ) {
     val periodSpan: Int get() = endPeriod - startPeriod + 1
     val weekdayLabel: String get() = TIMETABLE_WEEKDAYS[weekday - 1]
-    val periodLabel: String get() = if (startPeriod == endPeriod) "第${startPeriod}节" else "第${startPeriod}-${endPeriod}节"
+    val periodLabel: String
+        get() = when {
+            startPeriod == TIMETABLE_PERIOD_NONE -> "无节次"
+            startPeriod == endPeriod -> "第${startPeriod}节"
+            else -> "第${startPeriod}-${endPeriod}节"
+        }
     val weekLabel: String
         get() = if (startWeek == endWeek) "第${startWeek}周${parity.label}" else "$startWeek-$endWeek 周${parity.label}"
     val detailLabel: String get() = listOf(teacher, room).filter { it.isNotBlank() }.joinToString(" · ")
@@ -101,8 +109,12 @@ object TimetableValidator {
         if (name.isBlank()) invalid("第 $position 门课程缺少课程名")
         val weekday = normalizeWeekday(draft.weekday)
             ?: invalid("第 $position 门课程的星期无法识别")
-        val periods = normalizeSpan(draft.startPeriod, draft.endPeriod, TIMETABLE_MAX_PERIODS)
+        val periods = normalizeSpan(draft.startPeriod, draft.endPeriod, TIMETABLE_MAX_PERIODS, minimum = TIMETABLE_PERIOD_NONE)
             ?: invalid("第 $position 门课程的节次无法识别")
+        // 无节次 (0) is a complete answer on its own; it cannot be one end of a real period span.
+        if (periods.first == TIMETABLE_PERIOD_NONE && periods.last != TIMETABLE_PERIOD_NONE) {
+            invalid("第 $position 门课程的节次只识别出一半")
+        }
         val weeks = normalizeSpan(draft.startWeek, draft.endWeek, TIMETABLE_MAX_WEEKS)
             ?: invalid("第 $position 门课程的周次无法识别")
         return TimetableCourse(
@@ -129,6 +141,8 @@ object TimetableValidator {
                 val left = courses[index]
                 val right = courses[other]
                 if (left.weekday != right.weekday || left.name == right.name) continue
+                // 无节次 holds no slot, so it can neither collide with a real period nor with another 无节次 course.
+                if (left.startPeriod == TIMETABLE_PERIOD_NONE || right.startPeriod == TIMETABLE_PERIOD_NONE) continue
                 val periodsOverlap = left.startPeriod <= right.endPeriod && right.startPeriod <= left.endPeriod
                 if (periodsOverlap && shareATeachingWeek(left, right)) {
                     throw TimetableException(
@@ -167,13 +181,16 @@ object TimetableValidator {
         }
     }
 
-    /** Accepts "3", "第3-4节", "1-16周", or a separate end field, and never returns an inverted span. */
-    private fun normalizeSpan(start: String?, end: String?, max: Int): IntRange? {
+    /**
+     * Accepts "3", "第3-4节", "1-16周", or a separate end field, and never returns an inverted span.
+     * [minimum] is 无节次 for periods, because a course under the 无节次 line still has to be kept.
+     */
+    private fun normalizeSpan(start: String?, end: String?, max: Int, minimum: Int = 1): IntRange? {
         val startText = start?.trim().orEmpty()
         val endText = end?.trim().orEmpty()
         val startValue = firstInteger(startText) ?: return null
         val endValue = firstInteger(endText) ?: rangeEnd(startText) ?: startValue
-        if (startValue !in 1..max || endValue !in 1..max) return null
+        if (startValue !in minimum..max || endValue !in minimum..max) return null
         return minOf(startValue, endValue)..maxOf(startValue, endValue)
     }
 
@@ -279,15 +296,24 @@ data class TimetableGrid(val days: List<TimetableDay>, val periods: List<Int>)
  * [week] limits the grid to what is actually taught in that teaching week — a 单周 course is absent
  * from an even week, and the grid is only as tall as that week needs. A null [week] shows every
  * course at once, which is what the plain "整个学期" reading wants.
+ *
+ * Courses recognised as 无节次 lead the grid as a period-0 row of their own; the real periods start
+ * counting below it, so a timetable with a 无节次 line keeps that line's courses visible.
  */
 object TimetableGridLayout {
     fun build(timetable: Timetable, week: Int? = null): TimetableGrid {
         val courses = if (week == null) timetable.courses else timetable.courses.filter { it.runsInWeek(week) }
-        val periodCount = courses.maxOfOrNull { it.endPeriod }?.coerceIn(1, TIMETABLE_MAX_PERIODS) ?: 0
+        val periodCount = courses.filter { it.endPeriod >= 1 }
+            .maxOfOrNull { it.endPeriod }?.coerceIn(1, TIMETABLE_MAX_PERIODS) ?: 0
+        val hasNoPeriodRow = courses.any { it.startPeriod == TIMETABLE_PERIOD_NONE }
         val lastWeekday = if (courses.any { it.weekday >= 6 }) 7 else 5
         val days = (1..lastWeekday).map { weekday ->
             val coursesOfDay = courses.filter { it.weekday == weekday }.sortedBy { it.startPeriod }
             val blocks = mutableListOf<TimetableBlock>()
+            if (hasNoPeriodRow) {
+                val noPeriod = coursesOfDay.firstOrNull { it.startPeriod == TIMETABLE_PERIOD_NONE }
+                blocks += if (noPeriod == null) TimetableBlock.Free(TIMETABLE_PERIOD_NONE) else TimetableBlock.Course(noPeriod)
+            }
             var period = 1
             while (period <= periodCount) {
                 val course = coursesOfDay.firstOrNull { it.startPeriod <= period && period <= it.endPeriod }
@@ -301,7 +327,8 @@ object TimetableGridLayout {
             }
             TimetableDay(weekday, blocks)
         }
-        return TimetableGrid(days, (1..periodCount).toList())
+        val periods = if (hasNoPeriodRow) listOf(TIMETABLE_PERIOD_NONE) + (1..periodCount) else (1..periodCount).toList()
+        return TimetableGrid(days, periods)
     }
 }
 
