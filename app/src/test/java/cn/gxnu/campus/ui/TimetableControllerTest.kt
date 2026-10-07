@@ -109,6 +109,44 @@ class TimetableControllerTest {
         assertTrue(state.state.value.timetable!!.coursesInWeek(2).isNotEmpty())
     }
 
+    /**
+     * 课表是按**登录的那个账号**取回来的，不是编进安装包里的。把「谁在登」和「取回什么」绑在一起
+     * 断言：换个学号就必须换一份课表 —— 如果哪天有人把某个人的课表写死进构建，这条会红。
+     */
+    @Test
+    fun `the timetable that arrives is the one the signed-in account returned`() {
+        val source = FakeSource()
+        val state = controller(source = source)
+        // 第二个账号登进来时，服务端返回的是完全不同的三门课。
+        source.fetchResult = CampusTimetableApi.Fetch.Ok(OTHER_ACCOUNT_COURSES)
+
+        state.signIn("2026000001", "another-password", remember = false)
+
+        assertEquals("2026000001", source.lastUserId)
+        assertEquals("another-password", source.lastPassword)
+        val shown = state.state.value.timetable!!.courses
+        assertEquals(2, shown.size)
+        assertEquals(setOf("自选课A-fixture", "自选课B-fixture"), shown.map { it.name }.toSet())
+        assertTrue("上一个账号的课不该留下来", shown.none { it.name == "矩阵理论1班" })
+    }
+
+    /**
+     * 只换 token 不换接口是常见做法，所以同一次登录里「取课表」这一步必须带上登录拿到的那一枚
+     * token —— 服务端靠它决定返回谁的课表。
+     */
+    @Test
+    fun `the token from the login is the one the timetable is fetched with`() {
+        val source = FakeSource(
+            signInResult = CampusTimetableApi.SignIn.Ok("token-of-account-B")
+        )
+        val state = controller(source = source)
+
+        state.signIn("2026000002", "pw", remember = false)
+
+        assertEquals("token-of-account-B", source.lastToken)
+        assertEquals(7, state.state.value.timetable?.courseCount)
+    }
+
     @Test
     fun `a refused login says why and leaves no timetable behind`() {
         val source = FakeSource(signInResult = CampusTimetableApi.SignIn.Failed("学号或密码不正确。"))
@@ -246,5 +284,19 @@ class TimetableControllerTest {
                 ?.bufferedReader()?.use { it.readText() } ?: error("fixture /gmis/xskb-xh.json is missing")
             CampusTimetableApi.parseCourses(json)!!
         }
+
+        /** 另一个账号可能拿到的完全不同的课表，用来证明显示的是服务端返回的那一份。 */
+        val OTHER_ACCOUNT_COURSES: List<CampusTimetableApi.CampusCourse> = listOf(
+            CampusTimetableApi.CampusCourse(
+                name = "自选课A-fixture", teacher = "教师甲", room = "文理楼201",
+                weekday = 3, startPeriod = 1, endPeriod = 2, weeks = "1-16周[连续周]",
+                startClock = "08:30", endClock = "09:55"
+            ),
+            CampusTimetableApi.CampusCourse(
+                name = "自选课B-fixture", teacher = "教师乙", room = "文理楼202",
+                weekday = 5, startPeriod = 3, endPeriod = 3, weeks = "1-16周[连续周]",
+                startClock = "10:05", endClock = "10:45"
+            )
+        )
     }
 }
