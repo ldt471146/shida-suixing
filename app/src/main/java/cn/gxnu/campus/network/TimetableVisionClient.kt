@@ -1,6 +1,7 @@
 package cn.gxnu.campus.network
 
 import cn.gxnu.campus.BuildConfig
+import cn.gxnu.campus.core.TIMETABLE_MAX_PERIODS
 import cn.gxnu.campus.core.Timetable
 import cn.gxnu.campus.core.TimetableException
 import cn.gxnu.campus.core.TimetableFailure
@@ -27,6 +28,7 @@ import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * One downscaled, re-encoded image ready for upload. Not a data class: the bytes are large and
@@ -55,13 +57,11 @@ class TimetableVisionException(
  * body. Uploads target [TARGET_SIDE_PX], which is far below all three even after base64 inflation.
  */
 object VisionImageLimits {
-    /**
-     * Every downscaled pixel thrown away above this is course text the model then has to guess at.
-     * Measured on a real GXNU timetable: the same prompt and model score 100% at the photo's native
-     * 1700 px, 68% at 1024 px and 48-83% at 850 px, so the ceiling is kept near the endpoint's own
-     * 8192 px limit rather than at a comfortable upload size.
-     */
+    /** Reported from measurement: the model scores 100% at a photo's native 1700 px and 68% at 1024 px. */
     const val TARGET_SIDE_PX = 4_096
+
+    /** The endpoint refuses anything longer than this on either side, so nothing may exceed it. */
+    const val MAX_SIDE_PX = 8_192
     const val MAX_BASE64_BYTES = 32 * 1024 * 1024
     val ALLOWED_MIME_TYPES = setOf("image/jpeg", "image/png", "image/gif", "image/webp")
 
@@ -188,7 +188,13 @@ class HttpTimetableVisionClient internal constructor(
         var refusal: TimetableVisionException? = null
         for (model in MODELS) {
             try {
-                return request(model, image, key)
+                // Each model gets its own slice of the caller's budget. Without one, a model that hangs
+                // holds the ladder until the outer watchdog fires and the fallback never gets to answer
+                // at all — exactly the slow case a second model exists for.
+                return withTimeoutOrNull(ATTEMPT_TIMEOUT_MILLIS) { request(model, image, key) }
+                    ?: throw TimetableVisionException(
+                        TimetableVisionFailure.TIMEOUT, "识别请求超时，请检查网络后重试。"
+                    )
             } catch (failure: TimetableVisionException) {
                 // A second model only helps when the first never delivered a verdict. A model that
                 // looked at the photo and answered — even "this is not a timetable" — is believed.
@@ -282,23 +288,32 @@ class HttpTimetableVisionClient internal constructor(
         const val REASONING_EFFORT = "high"
 
         /**
-         * Tried in order. The default route answers a dense real timetable in ~16 s with no reasoning
-         * tokens at all; the deepseek route spends its whole output budget thinking on the same image
-         * and returns empty content, so it is kept only as a second chance for a request the default
-         * route could not complete — a gateway error, a timeout or an empty answer.
+         * Tried in order. Recorded against one real GXNU timetable photo: the default route answers in
+         * 11-26 s with `finish_reason=stop` and zero reasoning tokens, while the deepseek route spends
+         * the entire output budget thinking (`completion_thinking_tokens=8192`) and returns empty
+         * content at every `reasoning_effort` — so it is kept only as a second chance for a request the
+         * default route could not complete at all.
          */
         val MODELS = listOf("glm-5v-turbo", "deepseek-v4.1-flash")
         private val REASONING_MODELS = setOf("deepseek-v4.1-flash")
 
-        /** Failures that mean "no verdict was reached", so a different model is worth one more upload. */
+        /**
+         * Failures that mean "no verdict was reached", so a different model is worth one more upload.
+         * A truncated or malformed answer is deliberately absent: the model did read the photo and
+         * answered badly, and swapping models is not a fix for that. Neither is a rate limit, which
+         * the retry would meet again.
+         */
         private val WORTH_ANOTHER_MODEL = setOf(
             TimetableVisionFailure.EMPTY_RESPONSE,
             TimetableVisionFailure.TIMEOUT,
-            TimetableVisionFailure.SERVER,
-            TimetableVisionFailure.MALFORMED_RESPONSE,
-            TimetableVisionFailure.RATE_LIMITED
+            TimetableVisionFailure.SERVER
         )
 
+        /**
+         * Per model, so two attempts fit inside the caller's watchdog. The endpoint's own gateway
+         * drops a request at 60 s, so an attempt that reaches this bound has already failed.
+         */
+        private const val ATTEMPT_TIMEOUT_MILLIS = 40_000L
         private const val MAX_RESPONSE_TOKENS = 8_192
 
         private const val USER_PROMPT = "请识别这张课表图片，并按上面的 json 格式输出。"
@@ -341,7 +356,7 @@ class HttpTimetableVisionClient internal constructor(
 
             第一步，先数清表格有几列、每列是什么。从左到右念出每个星期列的表头文字，原样写进 day_headers 数组。表头可能写成「星期一 [Monday]」这样的中英文两行，也可能因为字小而换行。这种课表常常有 6 到 7 个星期列（含最右边的星期六、星期日），不要默认只有 5 列，漏掉最右边的列会直接导致后面判错列。
 
-            第二步，从上到下念出最左边一列的节次行标签，原样写进 period_labels 数组。典型顺序是：无节次、上午1、上午2、上午3、上午4、上午5、下午6、下午7、下午8、下午9、晚上10、晚上11、晚上12、晚上13。节次编号一律取标签末尾的阿拉伯数字：「上午3」就是第 3 节，「下午6」就是第 6 节，「晚上10」就是第 10 节，与上午/下午/晚上无关，不要重新从 1 数。行标签是「无节次」的那一行，start_period 和 end_period 都填 0。
+            第二步，从上到下念出最左边一列的节次行标签，原样写进 period_labels 数组。典型顺序是：无节次、上午1、上午2、上午3、上午4、上午5、下午6、下午7、下午8、下午9、晚上10、晚上11、晚上12、晚上13。**节次只能是 1 到 13 的整数，不要写 0**。节次编号一律取标签末尾的阿拉伯数字：「上午3」就是第 3 节，「下午6」就是第 6 节，「晚上10」就是第 10 节，与上午/下午/晚上无关，不要重新从 1 数。最上面那一行「无节次」不写节次号，落在这一行的课 start_period 和 end_period 都填 1，也就是从第 1 节开始。
 
             第三步，逐个课程色块清点，每个色块出一条记录：
             - weekday 取它所在的星期列在 day_headers 里的位置（第 1 列是 1，第 7 列是 7）。
@@ -363,7 +378,9 @@ class HttpTimetableVisionClient internal constructor(
  * The model is not a typed producer: it writes a number as either a json number or a string, spells
  * weekdays out in words, packs a whole 第3-4节 range into a single key, and copies a blank table cell
  * out as a bare bracket pair. Everything it might say is normalised here, so [TimetableValidator]
- * only ever sees the documented shape. 0 is a value, not a gap — it is what 无节次 looks like.
+ * only ever sees the documented shape. A period the model reads as 0 — the unnumbered 无节次 row of a
+ * printed sheet — is carried through as 0 and becomes 第1节 in the validator, which is the one place
+ * that owns the 1..13 range.
  */
 internal object TimetableResponseReader {
 
@@ -384,7 +401,9 @@ internal object TimetableResponseReader {
         }
         val payload = parseObject(content.removeCodeFence())
             ?: throw malformed("AI 返回的课表 json 无法解析，请重试。")
-        val courses = (array(payload, "courses") ?: JsonArray()).filter { it.isJsonObject }.map { course(it.asJsonObject) }
+        val parsed = (array(payload, "courses") ?: JsonArray()).filter { it.isJsonObject }
+            .map { course(it.asJsonObject) }
+        val courses = resolveUnnumbered(parsed)
         val declared = boolean(payload.get("is_timetable"))
         if (declared == false || declared == null && courses.isEmpty()) throw notATimetable()
         val timetable = try {
@@ -396,33 +415,94 @@ internal object TimetableResponseReader {
         return timetable
     }
 
-    private fun course(value: JsonObject): TimetableCourseDraft {
+    private fun course(value: JsonObject): ParsedCourse {
+        val rawStart = firstText(value, "start_period", "period_start", "start_section")
+        val rawEnd = firstText(value, "end_period", "period_end", "end_section")
         val startWeek = firstText(value, "start_week", "week_start")
         val endWeek = firstText(value, "end_week", "week_end")
-        val periods = span(
-            firstText(value, "start_period", "period_start", "start_section"),
-            firstText(value, "end_period", "period_end", "end_section")
-        )
+        val periods = span(periodText(rawStart), periodText(rawEnd))
         val weeks = span(startWeek, endWeek)
-        return TimetableCourseDraft(
-            name = firstText(value, "name", "course", "course_name", "title"),
-            teacher = firstCleanText(value, "teacher", "instructor"),
-            room = firstCleanText(value, "room", "classroom", "location"),
-            weekday = firstText(value, "weekday", "week_day", "day_of_week", "day")?.let(::normalizeWeekday),
-            startPeriod = periods.first,
-            endPeriod = periods.second,
-            startWeek = weeks.first,
-            endWeek = weeks.second,
-            // An explicit 单双周 field wins; otherwise the only place it was stated is the week range
-            // itself, which [span] may just have taken apart.
-            parity = firstText(value, "parity", "week_parity", "week_type")?.let(::normalizeParity)
-                ?: parityPrintedIn(startWeek, endWeek)
+        return ParsedCourse(
+            draft = TimetableCourseDraft(
+                name = firstText(value, "name", "course", "course_name", "title"),
+                teacher = firstCleanText(value, "teacher", "instructor"),
+                room = firstCleanText(value, "room", "classroom", "location"),
+                weekday = firstText(value, "weekday", "week_day", "day_of_week", "day")?.let(::normalizeWeekday),
+                startPeriod = periods.first,
+                endPeriod = periods.second,
+                startWeek = weeks.first,
+                endWeek = weeks.second,
+                // An explicit 单双周 field wins; otherwise the only place it was stated is the week range
+                // itself, which [span] may just have taken apart.
+                parity = firstText(value, "parity", "week_parity", "week_type")?.let(::normalizeParity)
+                    ?: parityPrintedIn(startWeek, endWeek)
+            ),
+            unnumbered = saysNothingAboutAPeriod(rawStart) && saysNothingAboutAPeriod(rawEnd)
         )
     }
 
-    /** The first spelling of the field that actually says something; an empty string says nothing. */
+    /**
+     * A course from the sheet's unnumbered row starts at the first period — unless that weekday's
+     * 上午1 slot is already taken, in which case writing a second course over it would make
+     * [TimetableValidator] reject the whole timetable. Losing every course is far worse than moving
+     * one, so the first period nothing else on that day occupies is used instead, and the course is
+     * still there for the user to place by hand.
+     */
+    private fun resolveUnnumbered(parsed: List<ParsedCourse>): List<TimetableCourseDraft> {
+        val taken = parsed.filterNot { it.unnumbered }.mapNotNull { entry ->
+            val day = entry.draft.weekday?.let(::normalizeWeekday)?.toIntOrNull() ?: return@mapNotNull null
+            val range = occupiedRange(entry.draft) ?: return@mapNotNull null
+            day to range
+        }
+        return parsed.map { entry ->
+            if (!entry.unnumbered) return@map entry.draft
+            val day = entry.draft.weekday?.let(::normalizeWeekday)?.toIntOrNull()
+            val free = if (day == null) FIRST_PERIOD else firstFreePeriod(day, taken).toString()
+            entry.draft.copy(startPeriod = free, endPeriod = free)
+        }
+    }
+
+    /** The period range one already-numbered draft holds, in the validator's own 1..20 terms. */
+    private fun occupiedRange(draft: TimetableCourseDraft): IntRange? {
+        val ends = span(draft.startPeriod, draft.endPeriod) ?: return null
+        val first = ends.first?.toIntOrNull()?.coerceIn(1, TIMETABLE_MAX_PERIODS) ?: return null
+        val last = ends.second?.toIntOrNull()?.coerceIn(1, TIMETABLE_MAX_PERIODS) ?: return null
+        return if (first <= last) first..last else last..first
+    }
+
+    private fun firstFreePeriod(day: Int, taken: List<Pair<Int, IntRange>>): Int {
+        val busy = taken.filter { it.first == day }.flatMap { (_, range) -> range.toList() }.toSet()
+        return (1..TIMETABLE_MAX_PERIODS).firstOrNull { it !in busy } ?: FIRST_PERIOD.toInt()
+    }
+
+    /**
+     * True when the model stated no usable period number: it left the field out, copied the sheet's own
+     * 无节次 label out, or wrote the 0 that row carries. All three mean the same thing here.
+     */
+    private fun saysNothingAboutAPeriod(raw: String?): Boolean {
+        val text = raw?.takeIf { it.isNotBlank() } ?: return true
+        val digits = normalizeDigits(text)
+        if (!NUMBER.containsMatchIn(digits)) return true
+        return digits.filter(Char::isDigit).toIntOrNull() == 0
+    }
+
+    private data class ParsedCourse(val draft: TimetableCourseDraft, val unnumbered: Boolean)
+
+    /**
+     * The first spelling of the field that actually says something; an empty string says nothing.
+     */
     private fun firstText(value: JsonObject, vararg keys: String): String? =
         keys.firstNotNullOfOrNull { scalar(value, it)?.takeIf { text -> text.isNotBlank() } }
+
+    /**
+     * A period field the model answered with the row's own label rather than a number. The school's
+     * unnumbered top row is labelled 无节次, and a course that sits in it starts at the first period —
+     * an unreadable label must not cost the user the whole timetable.
+     */
+    private fun periodText(value: String?): String? {
+        val text = value?.takeIf { it.isNotBlank() } ?: return null
+        return if (NUMBER.containsMatchIn(normalizeDigits(text))) text else FIRST_PERIOD
+    }
 
     /** [firstText] plus the empty-cell cleanup, for the fields that are only ever shown to the user. */
     private fun firstCleanText(value: JsonObject, vararg keys: String): String? =
@@ -445,8 +525,8 @@ internal object TimetableResponseReader {
      * The two ends of a period or week span. A range written into a single key ("第3-4节", "2-18周")
      * is split into its ends, but only when the sibling key states nothing, so a properly separated
      * pair is never second-guessed. A lone end is mirrored: a course taught "in these weeks" is
-     * better read as a one-point span than dropped. 0 is a value here like any other — 无节次 is what
-     * the timetable says, not a field the model forgot.
+     * better read as a one-point span than dropped. A 0 is carried through rather than treated as
+     * missing — [TimetableValidator] owns what the period range means, and it turns 0 into 第1节.
      */
     private fun span(start: String?, end: String?): Pair<String?, String?> {
         if (end == null) rangeEnds(start)?.let { return it }
@@ -507,6 +587,9 @@ internal object TimetableResponseReader {
         text.map { symbol -> if (symbol in '０'..'９') '0' + (symbol - '０') else symbol }.joinToString("")
 
     private const val BRACKET_CHARS = "[](){}<>（）【】〔〕「」『』〈〉《》〖〗［］｛｝＜＞"
+
+    /** What an unreadable period label means: the school's unnumbered row is its first period. */
+    private const val FIRST_PERIOD = "1"
 
     private val EMPTY_CELL_WORDS = setOf(
         "-", "--", "—", "——", "–", "－", "/", "／", "、", "?", "？",

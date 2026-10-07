@@ -156,79 +156,90 @@ class TimetableTest {
         assertFalse(grid.days.first().blocks.any { it is TimetableBlock.Course })
     }
 
-    // ---- 无节次 row ---------------------------------------------------------------------------
+    // ---- 无节次 is gone: a period read as 0 is the first period ---------------------------------
 
-    /** The 无节次 line a real 广西师大 timetable prints above 上午1, plus regular courses below it. */
-    private fun nonePeriodFixture(): Timetable = TimetableValidator.build("2026-2027学年第一学期", listOf(
-        draft(name = "无节次课-fixture", weekday = "1", startPeriod = "0", endPeriod = "0", startWeek = "2", endWeek = "18"),
-        draft(name = "课程A-fixture", weekday = "1", startPeriod = "1", endPeriod = "2"),
+    /** A course read off the line a real 广西师大 timetable prints above 上午1; it starts at 第1节. */
+    private fun zeroPeriodFixture(): Timetable = TimetableValidator.build("2026-2027学年第一学期", listOf(
+        draft(name = "课程0-fixture", weekday = "1", startPeriod = "0", endPeriod = "0", startWeek = "2", endWeek = "18"),
+        draft(name = "课程A-fixture", weekday = "1", startPeriod = "3", endPeriod = "4"),
         draft(name = "课程B-fixture", weekday = "3", startPeriod = "5", endPeriod = "6", room = "综合楼101")
     ), 0L)
 
-    @Test fun aCourseWithoutAPeriodIsKeptAsPeriodZero() {
+    @Test fun aPeriodReadAsZeroBecomesTheFirstPeriod() {
         val course = TimetableValidator.build(null, listOf(draft(startPeriod = "0", endPeriod = "0")), 0L).courses.single()
-        assertEquals(TIMETABLE_PERIOD_NONE, course.startPeriod)
-        assertEquals(TIMETABLE_PERIOD_NONE, course.endPeriod)
-        assertEquals("无节次", course.periodLabel)
+        assertEquals(1, course.startPeriod)
+        assertEquals(1, course.endPeriod)
+        assertEquals(1, course.periodSpan)
+        assertEquals("第1节", course.periodLabel)
     }
 
-    @Test fun aHalfNoPeriodSpanIsRefused() {
-        assertEquals(TimetableFailure.INVALID_FIELD, failureOf(TimetableDraft(courses = listOf(
-            draft(startPeriod = "0", endPeriod = "3")
+    @Test fun aZeroAtEitherEndOfALongerSpanIsClampedToOne() {
+        fun spanOf(startPeriod: String, endPeriod: String): Pair<Int, Int> {
+            val course = TimetableValidator.build(null, listOf(draft(startPeriod = startPeriod, endPeriod = endPeriod)), 0L)
+                .courses.single()
+            return course.startPeriod to course.endPeriod
+        }
+        // 0 is untrusted, so it reads as 第1节 and the end the model did state is kept.
+        assertEquals(1 to 6, spanOf("0", "6"))
+        assertEquals(1 to 3, spanOf("0", "3"))
+        // The same rule, then put in order: 0 becomes 1, and 6..1 is normalised to 1..6.
+        assertEquals(1 to 6, spanOf("6", "0"))
+        assertEquals(1 to 4, spanOf("4", "0"))
+        assertEquals(1 to 1, spanOf("0", "0"))
+    }
+
+    @Test fun aZeroStartDoesNotCostTheRestOfTheTimetable() {
+        val timetable = TimetableValidator.build("2026-2027学年第一学期", listOf(
+            draft(name = "课程A-fixture", weekday = "1", startPeriod = "0", endPeriod = "6"),
+            draft(name = "课程B-fixture", weekday = "1", startPeriod = "7", endPeriod = "8")
+        ), 0L)
+        assertEquals(2, timetable.courseCount)
+        val clamped = timetable.courses.first { it.name == "课程A-fixture" }
+        assertEquals(1, clamped.startPeriod)
+        assertEquals(6, clamped.endPeriod)
+        assertEquals("第1-6节", clamped.periodLabel)
+    }
+
+    @Test fun aZeroPeriodCourseIsNoLongerExemptFromTheConflictCheck() {
+        // 0 now means 第1节, so such a course really does hold that slot on its weekday.
+        assertEquals(TimetableFailure.CONFLICT, failureOf(TimetableDraft(courses = listOf(
+            draft(name = "课程A-fixture", weekday = "1", startPeriod = "0", endPeriod = "0"),
+            draft(name = "课程B-fixture", weekday = "1", startPeriod = "1", endPeriod = "2")
         ))))
-        assertEquals(TimetableFailure.INVALID_FIELD, failureOf(TimetableDraft(courses = listOf(
-            draft(startPeriod = "3", endPeriod = "0")
-        ))))
     }
 
-    @Test fun theNoPeriodRowLeadsTheGridOnlyWhenThatWeekHasOne() {
-        val timetable = nonePeriodFixture()
-        val withNone = TimetableGridLayout.build(timetable, 2)
-        assertEquals(listOf(0, 1, 2, 3, 4, 5, 6), withNone.periods)
-        val monday = withNone.days.first { it.weekday == 1 }.blocks
-        assertEquals(TimetableBlock.Course(timetable.courses.first { it.name == "无节次课-fixture" }), monday.first())
-        assertEquals(TimetableBlock.Course(timetable.courses.first { it.name == "课程A-fixture" }), monday[1])
-        val wednesday = withNone.days.first { it.weekday == 3 }.blocks
-        assertEquals(TimetableBlock.Free(TIMETABLE_PERIOD_NONE), wednesday.first())
-        assertTrue(wednesday.any { it is TimetableBlock.Course })
-        // The whole-term reading carries the row too, because that course is visible in it.
-        assertEquals(listOf(0, 1, 2, 3, 4, 5, 6), TimetableGridLayout.build(timetable).periods)
-    }
-
-    @Test fun aWeekWithoutNoPeriodCoursesStillStartsAtPeriodOne() {
-        // 无节次课-fixture runs 2-18, so week 1 has no period-0 row at all.
-        val nonePeriodWeek = TimetableGridLayout.build(nonePeriodFixture(), 1)
-        assertEquals(listOf(1, 2, 3, 4, 5, 6), nonePeriodWeek.periods)
-        assertFalse(nonePeriodWeek.periods.contains(TIMETABLE_PERIOD_NONE))
-        assertTrue(nonePeriodWeek.days.all { day -> day.blocks.none { it == TimetableBlock.Free(0) } })
+    @Test fun theGridAlwaysStartsAtPeriodOne() {
+        val timetable = zeroPeriodFixture()
+        val grid = TimetableGridLayout.build(timetable)
+        assertEquals(listOf(1, 2, 3, 4, 5, 6), grid.periods)
+        assertEquals(1, grid.periods.first())
+        // One row per period the table reaches, with no row in front of the first.
+        assertEquals(6, grid.periods.size)
+        val monday = grid.days.first { it.weekday == 1 }.blocks
+        assertEquals(TimetableBlock.Course(timetable.courses.first { it.name == "课程0-fixture" }), monday[0])
+        assertEquals(1, monday[0].span)
+        assertEquals(TimetableBlock.Free(2), monday[1])
+        assertEquals(2, monday[2].span)
+        // Every week starts at 1 as well, whatever that week happens to hold.
         assertEquals(listOf(1, 2), TimetableGridLayout.build(weekFixture(), 1).periods)
         assertEquals(listOf(1, 2, 3, 4), TimetableGridLayout.build(weekFixture(), 9).periods)
     }
 
-    @Test fun aCourseWithoutAPeriodNeverConflicts() {
+    @Test fun aWeekHoldingOnlyAZeroPeriodCourseIsASingleRow() {
         val timetable = TimetableValidator.build(null, listOf(
-            draft(name = "无节次课A-fixture", weekday = "1", startPeriod = "0", endPeriod = "0"),
-            draft(name = "无节次课B-fixture", weekday = "1", startPeriod = "0", endPeriod = "0"),
-            draft(name = "课程A-fixture", weekday = "1", startPeriod = "1", endPeriod = "2")
+            draft(name = "课程0-fixture", weekday = "2", startPeriod = "0", endPeriod = "0", startWeek = "1", endWeek = "4")
         ), 0L)
-        assertEquals(3, timetable.courseCount)
+        val grid = TimetableGridLayout.build(timetable, 1)
+        assertEquals(listOf(1), grid.periods)
+        assertTrue(grid.days.first { it.weekday == 2 }.blocks.single() is TimetableBlock.Course)
+        assertEquals(TimetableBlock.Free(1), grid.days.first { it.weekday == 1 }.blocks.single())
     }
 
-    @Test fun coursesWithoutAPeriodStillGetAColourSlot() {
-        val timetable = nonePeriodFixture()
+    @Test fun everyClampedCourseStillGetsAColourSlot() {
+        val timetable = zeroPeriodFixture()
         val slots = TimetableCourseSlots.assign(timetable.courses, 6)
         assertEquals(timetable.courses.size, slots.size)
         assertTrue(slots.values.all { it in 0 until 6 })
-    }
-
-    @Test fun aWeekOfNothingButNoPeriodCoursesHasJustThatRow() {
-        val timetable = TimetableValidator.build(null, listOf(
-            draft(name = "无节次课-fixture", weekday = "2", startPeriod = "0", endPeriod = "0", startWeek = "1", endWeek = "4")
-        ), 0L)
-        val grid = TimetableGridLayout.build(timetable, 1)
-        assertEquals(listOf(TIMETABLE_PERIOD_NONE), grid.periods)
-        assertTrue(grid.days.first { it.weekday == 2 }.blocks.single() is TimetableBlock.Course)
-        assertEquals(TimetableBlock.Free(TIMETABLE_PERIOD_NONE), grid.days.first { it.weekday == 1 }.blocks.single())
     }
 
     @Test fun aThirteenPeriodTimetableIsAcceptedWhole() {
@@ -238,20 +249,23 @@ class TimetableTest {
                 name = "第${period}节-fixture", weekday = "${(period - 1) % 5 + 1}",
                 startPeriod = "$period", endPeriod = "$period"
             )
-        } + draft(name = "无节次课-fixture", weekday = "1", startPeriod = "0", endPeriod = "0", startWeek = "1", endWeek = "18")
+        } + draft(name = "课程0-fixture", weekday = "5", startPeriod = "0", endPeriod = "0", startWeek = "1", endWeek = "18")
         val timetable = TimetableValidator.build(null, courses, 0L)
         assertEquals(14, timetable.courseCount)
         assertEquals(20, TIMETABLE_MAX_PERIODS)
+        // The period-0 course counts as 第1节, so it neither adds a row nor disturbs 第5节/第10节.
+        assertEquals(1, timetable.courses.first { it.name == "课程0-fixture" }.startPeriod)
         val grid = TimetableGridLayout.build(timetable, 1)
-        assertEquals(listOf(0) + (1..13).toList(), grid.periods)
+        assertEquals((1..13).toList(), grid.periods)
         assertEquals(13, grid.periods.last())
     }
 
-    @Test fun aRealShapedResultWithOneNoPeriodCourseIsAcceptedWhole() {
-        // The shape of a real 广西师大 recognition: eight courses, one of them on the 无节次 line,
-        // the rest on the 上午/下午/晚上 rows (6-9 and 10-13). Names and rooms stay fictional.
+    @Test fun aRealShapedResultWithAZeroPeriodCourseIsAcceptedWhole() {
+        // The shape of a real 广西师大 recognition: eight courses, one of them read off the line the
+        // source prints above 上午1, the rest on the 上午/下午/晚上 rows (6-9 and 10-13). That course
+        // now starts at 第1节; names and rooms stay fictional.
         val courses = listOf(
-            draft(name = "无节次课-fixture", weekday = "1", startPeriod = "0", endPeriod = "0", startWeek = "2", endWeek = "18"),
+            draft(name = "课程0-fixture", weekday = "1", startPeriod = "0", endPeriod = "0", startWeek = "2", endWeek = "18"),
             draft(name = "课程A-fixture", weekday = "2", startPeriod = "3", endPeriod = "5", startWeek = "3", endWeek = "11"),
             draft(name = "课程B-fixture", weekday = "1", startPeriod = "6", endPeriod = "7", startWeek = "2", endWeek = "17"),
             draft(name = "课程C-fixture", weekday = "2", startPeriod = "6", endPeriod = "7", startWeek = "2", endWeek = "18"),
@@ -263,7 +277,11 @@ class TimetableTest {
         val timetable = TimetableValidator.build("2026-2027学年第一学期", courses, 0L)
         assertEquals(8, timetable.courseCount)
         assertEquals(18, timetable.weekCount)
-        assertEquals(listOf(0) + (1..13).toList(), TimetableGridLayout.build(timetable).periods)
+        val clamped = timetable.courses.first { it.name == "课程0-fixture" }
+        assertEquals(1, clamped.startPeriod)
+        assertEquals(1, clamped.endPeriod)
+        assertEquals("第1节", clamped.periodLabel)
+        assertEquals((1..13).toList(), TimetableGridLayout.build(timetable).periods)
     }
 
     @Test fun aPeriodAboveTheCeilingIsStillRefused() {

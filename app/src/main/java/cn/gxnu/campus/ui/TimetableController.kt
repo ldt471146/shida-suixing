@@ -4,8 +4,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
+import cn.gxnu.campus.core.TIMETABLE_MAX_COURSES
 import cn.gxnu.campus.core.Timetable
 import cn.gxnu.campus.core.TimetableCalendar
+import cn.gxnu.campus.core.TimetableCourse
+import cn.gxnu.campus.core.TimetableCourseDraft
+import cn.gxnu.campus.core.TimetableException
+import cn.gxnu.campus.core.TimetableFailure
+import cn.gxnu.campus.core.TimetableValidator
+import cn.gxnu.campus.core.TimetableWordImporter
+import cn.gxnu.campus.core.WordDocuments
+import cn.gxnu.campus.core.WordImportResult
 import cn.gxnu.campus.data.TimetableStore
 import cn.gxnu.campus.data.VisionApiKeyStore
 import cn.gxnu.campus.data.maskApiKey
@@ -32,6 +41,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 data class TimetableUiState(
     val restoring: Boolean = true,
     val recognizing: Boolean = false,
+    /** True from the moment a Word file is handed over until its courses are in the state. */
+    val importing: Boolean = false,
     val timetable: Timetable? = null,
     /** True when this build carries its own endpoint and key, so the key screen is never shown. */
     val builtInKey: Boolean = false,
@@ -55,9 +66,21 @@ data class TimetableUiState(
 
 interface TimetableActions {
     fun useImage(image: TimetableImage)
+
+    /**
+     * Imports a 课表 printed by the 教务系统 and saved as Word. [fileName] only names the file in what
+     * the user is told — the bytes decide what the document really is.
+     */
+    fun importWord(fileName: String, bytes: ByteArray)
     fun saveApiKey(value: String)
     fun clearApiKey()
     fun retry()
+
+    /** 新增一门课；[index] 不为 null 时替换已有的那一门。 */
+    fun saveCourse(index: Int?, draft: TimetableCourseDraft)
+
+    /** 删除第 [index] 门课。 */
+    fun removeCourse(index: Int)
 
     /**
      * Stops a recognition that is in flight. The picked image is kept, so 重新识别 can start over
@@ -86,6 +109,8 @@ class TimetableController internal constructor(
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val builtInKey: String = "",
     private val today: () -> LocalDate = { LocalDate.now() },
+    /** The wall clock an import stamps its timetable with; a recognition stamps its own. */
+    private val now: () -> Long = { System.currentTimeMillis() },
     private val recognitionTimeoutMillis: Long = DEFAULT_RECOGNITION_TIMEOUT_MILLIS
 ) : TimetableActions {
 
@@ -137,8 +162,102 @@ class TimetableController internal constructor(
         recognize(image)
     }
 
-    override fun selectWeek(week: Int) {
+    override fun importWord(fileName: String, bytes: ByteArray) {
+        // One import at a time: two answers racing for the same state is the failure the guard in
+        // recognize() exists to prevent, and the same reasoning holds here.
+        if (mutableState.value.importing) return
+        // An import is a new context. A recognition card still on screen is titled 没识别到课表 and the
+        // page shows no notice row while it is up, so it goes with the import instead of framing it.
+        mutableState.value = mutableState.value.copy(importing = true, failure = null, message = null)
+        val started = try {
+            scope.launch { publishImport(importOutcome(fileName, bytes)) }
+        } catch (_: Throwable) {
+            null
+        }
+        // A scope that is already cancelled hands back a job that will never run a line, so the
+        // release recognize() needs applies here too: a flag with nothing behind it comes down here.
+        if (started == null || (started.isCancelled && mutableState.value.importing)) {
+            mutableState.value = mutableState.value.copy(
+                importing = false,
+                message = "导入没能启动，请重试。",
+                messageId = ++messageId
+            )
+        }
+    }
+
+    /**
+     * One import attempt. Everything but cancellation is folded into a refusal here, so a malformed
+     * document, an [Error] out of the readers or a failed write cannot escape the coroutine and leave
+     * `importing` set for good — the same shape the recognition path has, for the same reason.
+     */
+    private suspend fun importOutcome(fileName: String, bytes: ByteArray): ImportOutcome = try {
+        runImport(fileName, bytes)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Throwable) {
+        ImportOutcome.Refused("导入失败，请确认文件是本机教务系统导出的课表，然后重试。")
+    }
+
+    private suspend fun runImport(fileName: String, bytes: ByteArray): ImportOutcome = withContext(dispatcher) {
+        if (bytes.size > WordDocuments.MAX_BYTES) {
+            return@withContext ImportOutcome.Refused("「$fileName」超过 24 MB，课表文件没有这么大，请换一个文件。")
+        }
+        val document = WordDocuments.read(bytes)
+            ?: return@withContext ImportOutcome.Refused("这个文件不是 Word 课表，请选择 .doc 或 .docx。")
+        val imported = try {
+            // A printed 课表 states its term in the page title, which never reaches the table reader,
+            // so the import claims no term rather than inventing one.
+            TimetableWordImporter.read(document, term = "", recognizedAtMillis = now())
+        } catch (refusal: TimetableException) {
+            return@withContext ImportOutcome.Refused(importRefusal(refusal))
+        }
+        // A result that cannot be written is still a result: it reaches the screen with the warning.
+        val persisted = try { store.save(imported.timetable); true } catch (_: Throwable) { false }
+        ImportOutcome.Imported(imported, persisted)
+    }
+
+    private fun publishImport(outcome: ImportOutcome) {
         val current = mutableState.value
+        mutableState.value = when (outcome) {
+            is ImportOutcome.Imported -> current.withTimetable(outcome.imported.timetable, current.termStartEpochDay).copy(
+                importing = false,
+                failure = null,
+                message = importMessage(outcome),
+                messageId = ++messageId
+            )
+            is ImportOutcome.Refused -> current.copy(
+                importing = false,
+                failure = null,
+                message = outcome.message,
+                messageId = ++messageId
+            )
+        }
+    }
+
+    /** What an import tells the user: the courses it brought in, and the rows it left out on purpose. */
+    private fun importMessage(outcome: ImportOutcome.Imported): String {
+        val count = outcome.imported.timetable.courseCount
+        val skipped = outcome.imported.skippedUnnumbered
+        val body = if (skipped > 0) "已从 Word 导入 $count 门课程，忽略「无节次」行的 $skipped 门课。"
+        else "已从 Word 导入 $count 门课程。"
+        return if (outcome.persisted) body else "${body}未能保存到本机，重开后会丢失。"
+    }
+
+    /**
+     * The validator's wording is addressed to the photo screen ("请换一张更清晰的课表照片"), so a refused
+     * import reports the same failure in the language of a Word file the user picked.
+     */
+    private fun importRefusal(refusal: TimetableException): String = when (refusal.failure) {
+        TimetableFailure.NO_COURSES -> "这个 Word 文件里没有课程，请确认导出的是本学期课表。"
+        TimetableFailure.TOO_MANY_COURSES -> "文件里的课程过多（超过 $TIMETABLE_MAX_COURSES 门），请确认选的是课表文件。"
+        TimetableFailure.CONFLICT -> "文件里的课程时间有冲突，这张课表无法导入，请检查后再试。"
+        // The importer's own wording already names a Word file rather than a photo.
+        TimetableFailure.NOT_A_TIMETABLE -> refusal.message?.takeIf { it.isNotBlank() }
+            ?: "这个 Word 文件里没有找到课表表格，请确认导出的是教务系统的课表。"
+        TimetableFailure.INVALID_FIELD -> invalidFieldReason(refusal)
+    }
+
+    override fun selectWeek(week: Int) {        val current = mutableState.value
         mutableState.value = current.copy(selectedWeek = week.coerceIn(1, current.weekCount.coerceAtLeast(1)))
     }
 
@@ -240,43 +359,135 @@ class TimetableController internal constructor(
         mutableState.value = mutableState.value.copy(message = null)
     }
 
+    override fun saveCourse(index: Int?, draft: TimetableCourseDraft) {
+        val timetable = mutableState.value.timetable
+        if (timetable == null) {
+            publishEdit("还没有课表可以修改，请先识别课表或重试识别。")
+            return
+        }
+        if (index != null && index !in timetable.courses.indices) {
+            publishEdit("要修改的课程不存在，请重新打开这门课再试。")
+            return
+        }
+        val drafts = timetable.courses.map { it.toDraft() }.toMutableList()
+        if (index == null) drafts += draft else drafts[index] = draft
+        rebuild(drafts, if (index == null) "已添加这门课并保存在本机。" else "修改已保存在本机。")
+    }
+
+    override fun removeCourse(index: Int) {
+        val timetable = mutableState.value.timetable
+        if (timetable == null) {
+            publishEdit("还没有课表可以修改，请先识别课表或重试识别。")
+            return
+        }
+        if (index !in timetable.courses.indices) {
+            publishEdit("要删除的课程不存在，请刷新后再试。")
+            return
+        }
+        rebuild(
+            timetable.courses.filterIndexed { position, _ -> position != index }.map { it.toDraft() },
+            "已删除这门课并保存在本机。"
+        )
+    }
+
+    /**
+     * An edit is a new context. A recognition failure the page may still be showing has to go with it,
+     * or its card would frame a message about the course the user just typed under the title
+     * "没识别到课表" — and, while a failure is on screen, the page shows no separate notice row at all.
+     */
+    private fun publishEdit(message: String) {
+        mutableState.value = mutableState.value.copy(
+            failure = null,
+            message = message,
+            messageId = ++messageId
+        )
+    }
+
+    /**
+     * Rebuilds the whole timetable from [drafts] to write it, so a hand edit is held to exactly the
+     * ranges and conflicts a recognition is — there is no second rule book. A refusal leaves the
+     * timetable the user is looking at untouched and says why.
+     */
+    private fun rebuild(drafts: List<TimetableCourseDraft>, savedMessage: String) {
+        val timetable = mutableState.value.timetable ?: return
+        val rebuilt = try {
+            TimetableValidator.build(timetable.term, drafts, timetable.recognizedAtMillis)
+        } catch (refusal: TimetableException) {
+            publishEdit(editRefusal(refusal))
+            return
+        }
+        scope.launch {
+            val persisted = withContext(dispatcher) {
+                try { store.save(rebuilt); true } catch (_: Throwable) { false }
+            }
+            val latest = mutableState.value
+            mutableState.value = if (persisted) latest.withEditedTimetable(rebuilt).copy(
+                failure = null,
+                message = savedMessage,
+                messageId = ++messageId
+            ) else latest.copy(
+                failure = null,
+                message = "已修改，但未能保存到本机，重开后会丢失。",
+                messageId = ++messageId
+            )
+        }
+    }
+
+    /**
+     * The validator's wording is addressed to the recognition screen ("换一张更清晰的课表照片"), so a
+     * refused edit reports the same failure in the language of a form the user is filling in.
+     */
+    private fun editRefusal(refusal: TimetableException): String = when (refusal.failure) {
+        TimetableFailure.CONFLICT -> "这门课与其他课程时间冲突，请调整星期或节次。"
+        TimetableFailure.NO_COURSES -> "这是课表里的最后一门课，如需清空请使用「删除课表」。"
+        TimetableFailure.TOO_MANY_COURSES -> "课程数量已达上限（$TIMETABLE_MAX_COURSES 门），请先删除一些课程。"
+        TimetableFailure.INVALID_FIELD -> invalidFieldReason(refusal)
+        // Only the response reader raises this one, so it stands in as the last resort here.
+        TimetableFailure.NOT_A_TIMETABLE -> "这门课的信息无法保存，请检查后重试。"
+    }
+
+    /** "第 2 门课程的星期无法识别" — the clause before the comma names the field that is wrong. */
+    private fun invalidFieldReason(refusal: TimetableException): String {
+        val field = refusal.message.orEmpty().substringBefore("，").trimEnd('。')
+        return if (field.isBlank()) "课程信息不完整或不合法，请检查后重试。" else "$field，请检查后重试。"
+    }
+
+    /**
+     * A stored course back in the untrusted shape the validator takes, so editing it is parsed by the
+     * same rules as a recognition. 单双周 travels with it: without it a 单周 and a 双周 course sharing
+     * one slot would read as a clash the moment anything else is rebuilt.
+     */
+    private fun TimetableCourse.toDraft(): TimetableCourseDraft = TimetableCourseDraft(
+        name = name,
+        teacher = teacher,
+        room = room,
+        weekday = weekday.toString(),
+        startPeriod = startPeriod.toString(),
+        endPeriod = endPeriod.toString(),
+        startWeek = startWeek.toString(),
+        endWeek = endWeek.toString(),
+        parity = parity.name
+    )
+
     private fun recognize(image: TimetableImage) {
         // Replacing a live request would leave the first one's answer to land on top of the second's.
         if (recognition?.isActive == true) return
         mutableState.value = mutableState.value.copy(recognizing = true, failure = null, message = null)
-        recognition = scope.launch {
-            val outcome = try {
-                // The watchdog is the last resort behind the visible 取消 button: it bounds how long
-                // a stalled request can keep the screen in its busy state.
-                withTimeoutOrNull(recognitionTimeoutMillis) { withContext(dispatcher) { attempt(image) } }
-            } catch (cancelled: CancellationException) {
-                // cancelRecognition() has already published the cancelled state.
-                throw cancelled
-            } catch (_: Exception) {
-                Outcome.Refused(null, "识别失败，请检查网络后重试。")
-            }
-            val current = mutableState.value
-            mutableState.value = when (outcome) {
-                null -> current.copy(
-                    recognizing = false,
-                    failure = null,
-                    message = "识别用时过长，已自动停止，请重试。",
-                    messageId = ++messageId
-                )
-                is Outcome.Recognized -> current.withTimetable(outcome.timetable, current.termStartEpochDay).copy(
-                    recognizing = false,
-                    failure = null,
-                    message = if (outcome.persisted) "课表已识别并保存在本机。"
-                    else "课表已识别，但未能保存到本机，本次结果重开后会丢失。",
-                    messageId = ++messageId
-                )
-                is Outcome.Refused -> current.copy(
-                    recognizing = false,
-                    failure = outcome.failure,
-                    message = outcome.message,
-                    messageId = ++messageId
-                )
-            }
+        // A scope that is already cancelled hands back a job that will never run a line, so a flag
+        // with nothing behind it is released from here rather than by a completion that cannot fire.
+        val started = try {
+            scope.launch { publishOutcome(runRecognition(image)) }
+        } catch (_: Throwable) {
+            null
+        }
+        recognition = started
+        if (started == null || (started.isCancelled && mutableState.value.recognizing)) {
+            recognition = null
+            mutableState.value = mutableState.value.copy(
+                recognizing = false,
+                message = "识别没能启动，请重试。",
+                messageId = ++messageId
+            )
         }
     }
 
@@ -292,6 +503,49 @@ class TimetableController internal constructor(
         )
     }
 
+    /**
+     * One attempt at a recognition. Everything but cancellation is folded into a refusal here, so an
+     * [Error] out of the client, the vault or the watchdog cannot escape the coroutine. Nothing
+     * behind this scope installs a CoroutineExceptionHandler, so an escapee would take the process
+     * down and leave `recognizing` set for good. A null answer means the watchdog ran out.
+     */
+    private suspend fun runRecognition(image: TimetableImage): Outcome? = try {
+        // The watchdog is the last resort behind the visible 取消 button: it bounds how long
+        // a stalled request can keep the screen in its busy state.
+        withTimeoutOrNull(recognitionTimeoutMillis) { withContext(dispatcher) { attempt(image) } }
+    } catch (cancelled: CancellationException) {
+        // cancelRecognition() has already published the cancelled state.
+        throw cancelled
+    } catch (_: Throwable) {
+        Outcome.Refused(null, "识别失败，请检查网络后重试。")
+    }
+
+    /** The one place an attempt turns into what the screen renders, timeout included. */
+    private fun publishOutcome(outcome: Outcome?) {
+        val current = mutableState.value
+        mutableState.value = when (outcome) {
+            null -> current.copy(
+                recognizing = false,
+                failure = null,
+                message = "识别用时过长，已自动停止，请重试。",
+                messageId = ++messageId
+            )
+            is Outcome.Recognized -> current.withTimetable(outcome.timetable, current.termStartEpochDay).copy(
+                recognizing = false,
+                failure = null,
+                message = if (outcome.persisted) "课表已识别并保存在本机。"
+                else "课表已识别，但未能保存到本机，本次结果重开后会丢失。",
+                messageId = ++messageId
+            )
+            is Outcome.Refused -> current.copy(
+                recognizing = false,
+                failure = outcome.failure,
+                message = outcome.message,
+                messageId = ++messageId
+            )
+        }
+    }
+
     private suspend fun attempt(image: TimetableImage): Outcome {
         val key = resolvedApiKey()
         if (key.isNullOrBlank()) return Outcome.Refused(TimetableVisionFailure.MISSING_KEY, "请先填写 API Key，再识别课表。")
@@ -301,10 +555,11 @@ class TimetableController internal constructor(
             throw cancelled
         } catch (failure: TimetableVisionException) {
             return Outcome.Refused(failure.failure, failure.message ?: "识别失败，请重试。")
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             return Outcome.Refused(null, "识别失败，请检查网络后重试。")
         }
-        val persisted = try { store.save(timetable); true } catch (_: Exception) { false }
+        // A result that cannot be written is still a result: it reaches the screen with the warning.
+        val persisted = try { store.save(timetable); true } catch (_: Throwable) { false }
         return Outcome.Recognized(timetable, persisted)
     }
 
@@ -337,9 +592,24 @@ class TimetableController internal constructor(
         )
     }
 
+    /**
+     * Swaps in an edited timetable without disturbing what the user was doing: the week they had
+     * browsed to, the term start and the ability to re-recognise the last photo all survive, and the
+     * browsed week is clamped to the term the edit left behind.
+     */
+    private fun TimetableUiState.withEditedTimetable(timetable: Timetable): TimetableUiState {
+        val edited = withTimetable(timetable, termStartEpochDay)
+        return edited.copy(selectedWeek = selectedWeek.coerceIn(1, edited.weekCount.coerceAtLeast(1)))
+    }
+
     private sealed interface Outcome {
         data class Recognized(val timetable: Timetable, val persisted: Boolean) : Outcome
         data class Refused(val failure: TimetableVisionFailure?, val message: String) : Outcome
+    }
+
+    private sealed interface ImportOutcome {
+        data class Imported(val imported: WordImportResult, val persisted: Boolean) : ImportOutcome
+        data class Refused(val message: String) : ImportOutcome
     }
 
     private data class Restored(

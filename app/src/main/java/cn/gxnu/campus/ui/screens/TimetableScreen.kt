@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,18 +37,23 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.PhotoLibrary
+import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Today
@@ -71,7 +78,9 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextFieldColors
 import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -98,6 +107,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -106,16 +117,17 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import cn.gxnu.campus.core.TIMETABLE_PERIOD_NONE
 import cn.gxnu.campus.core.TIMETABLE_WEEKDAYS
 import cn.gxnu.campus.core.Timetable
 import cn.gxnu.campus.core.TimetableBlock
 import cn.gxnu.campus.core.TimetableCalendar
 import cn.gxnu.campus.core.TimetableCourse
+import cn.gxnu.campus.core.TimetableCourseDraft
 import cn.gxnu.campus.core.TimetableCourseSlots
 import cn.gxnu.campus.core.TimetableDay
 import cn.gxnu.campus.core.TimetableGridLayout
 import cn.gxnu.campus.core.WeekParity
+import cn.gxnu.campus.core.WordDocuments
 import cn.gxnu.campus.network.TimetableVisionFailure
 import cn.gxnu.campus.ui.TimetableActions
 import cn.gxnu.campus.ui.TimetableUiState
@@ -129,6 +141,8 @@ import cn.gxnu.campus.ui.theme.CampusPalette
 import cn.gxnu.campus.ui.theme.CampusRadius
 import cn.gxnu.campus.ui.theme.CampusSpace
 import cn.gxnu.campus.ui.theme.LocalCampusPalette
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.time.LocalDate
 import java.time.ZoneOffset
 import kotlinx.coroutines.Dispatchers
@@ -159,8 +173,6 @@ private const val GridSpanningNameMaxLines = 4
 private const val GridSingleNameMaxLines = 3
 // The width of the right-edge fade that says the grid keeps going past the card border.
 private val GridScrollFadeWidth = 20.dp
-// The 无节次 row: a course the recognition placed in no 节次 at all still needs a row to be drawn in.
-private const val GridNoPeriodLabel = "无节次"
 // A cell is a fixed 66dp tall, so a name past ~1.3x would grow out of its row and overlap the next
 // one. Only the grid caps its own text scale; the rest of the screen keeps the system setting.
 private const val GridMaxFontScale = 1.3f
@@ -170,7 +182,7 @@ private val PreviewImageMaxHeight = 320.dp
 // Label columns are stated in sp rather than dp so they grow with the font scale instead of
 // ellipsising a real value ("11-12", "上课时间") once the user turns the text size up. Every row of a
 // list shares one width, so the column beside it stays aligned from row to row. The 今日 period
-// column holds a whole label now — "第3-4节", "无节次" — so it is sized for the widest of them.
+// column holds a whole label — "第3-4节" — so it is sized for the widest of them.
 private val TodayPeriodColumnWidth = 56.sp
 private val DetailLabelColumnWidth = 72.sp
 
@@ -191,11 +203,15 @@ fun TimetableScreen(
     var keyDraft by remember { mutableStateOf("") }
     var keyVisible by remember { mutableStateOf(false) }
     var preparing by remember { mutableStateOf(false) }
+    // The picked file is read off the main thread, and the controller parses it after that, so the
+    // page is busy from the tap in the file manager until the imported courses are on screen.
+    var readingFile by remember { mutableStateOf(false) }
     var preview by remember { mutableStateOf<Bitmap?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var confirmingDelete by remember { mutableStateOf(false) }
     var settingTermStart by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf<TimetableCourse?>(null) }
+    var editor by remember { mutableStateOf<CourseEditorRequest?>(null) }
     var captureTarget by remember { mutableStateOf<Uri?>(null) }
 
     fun load(uri: Uri, discardAfterwards: Boolean) {
@@ -214,8 +230,24 @@ fun TimetableScreen(
         }
     }
 
+    fun importWord(uri: Uri) {
+        if (readingFile) return
+        readingFile = true
+        notice = null
+        scope.launch {
+            when (val pick = readWordPick(context, uri)) {
+                is WordPick.Ready -> actions.importWord(pick.fileName, pick.bytes)
+                is WordPick.Failed -> notice = pick.message
+            }
+            readingFile = false
+        }
+    }
+
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) load(uri, discardAfterwards = false) else notice = "没有选择图片。"
+    }
+    val wordPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importWord(uri) else notice = "没有选择文件。"
     }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { captured ->
         val target = captureTarget
@@ -229,7 +261,8 @@ fun TimetableScreen(
 
     val timetable = state.timetable
     val message = state.message ?: notice
-    val busy = preparing || state.recognizing
+    val importing = readingFile || state.importing
+    val busy = preparing || state.recognizing || importing
     val captureSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
     // 今日 is only claimed when the grid is genuinely showing the week today falls in.
     val showingCurrentWeek = state.termStartEpochDay != null && state.selectedWeek == state.currentWeek
@@ -254,6 +287,14 @@ fun TimetableScreen(
         picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
 
+    fun pickWordFile() {
+        try {
+            wordPicker.launch(WordImportFiles.MIME_TYPES)
+        } catch (_: Exception) {
+            notice = "这台设备没有可用的文件管理器，请先安装一个再导入课表。"
+        }
+    }
+
     LazyColumn(
         modifier = modifier,
         contentPadding = PaddingValues(
@@ -267,8 +308,8 @@ fun TimetableScreen(
         item {
             CampusPageHeader(
                 title = "课表",
-                subtitle = if (timetable == null) "拍照识别，生成能按周查看的课程表"
-                else "共 ${timetable.courseCount} 门课程 · 识别于 ${formatDate(timetable.recognizedAtMillis)}"
+                subtitle = if (timetable == null) "导入教务系统的 Word 课表，或拍照识别"
+                else "共 ${timetable.courseCount} 门课程 · 更新于 ${formatDate(timetable.recognizedAtMillis)}"
             )
         }
         state.failure?.let { failure ->
@@ -332,9 +373,11 @@ fun TimetableScreen(
             when {
                 state.restoring -> LoadingCard()
                 timetable == null -> EmptyTimetableCard(
+                    onImportWord = ::pickWordFile,
                     onPick = ::pickImage,
                     onShoot = if (captureSupported) ::shoot else null,
-                    busy = busy
+                    busy = busy,
+                    importing = importing
                 )
                 else -> TimetableSection(
                     state = state,
@@ -355,11 +398,14 @@ fun TimetableScreen(
                 ManageCard(
                     hasPreview = state.canRetry,
                     busy = busy,
+                    importing = importing,
                     captureSupported = captureSupported,
+                    onImportWord = ::pickWordFile,
                     onPick = ::pickImage,
                     onShoot = ::shoot,
                     onRetry = actions::retry,
-                    onDelete = { confirmingDelete = true }
+                    onDelete = { confirmingDelete = true },
+                    onAddCourse = { editor = CourseEditorRequest(index = null, course = null) }
                 )
             }
         }
@@ -417,10 +463,45 @@ fun TimetableScreen(
             course = course,
             week = state.selectedWeek,
             tint = tintFor(LocalCampusPalette.current, course, timetable),
-            onDismiss = { detail = null }
+            onDismiss = { detail = null },
+            onEdit = {
+                // Two bottom sheets must never stack, so the detail gives way to the editor. The
+                // index is the course's own place in the timetable, which is what the controller
+                // replaces; an untraceable course edits as a new one rather than the wrong one.
+                detail = null
+                editor = CourseEditorRequest(index = courseIndexIn(timetable, course), course = course)
+            }
+        )
+    }
+
+    editor?.let { request ->
+        val palette = LocalCampusPalette.current
+        CourseEditorSheet(
+            index = request.index,
+            course = request.course,
+            tint = request.course?.let { tintFor(palette, it, timetable) } ?: tintAt(palette, 0),
+            onSave = { draft ->
+                val index = request.index
+                editor = null
+                actions.saveCourse(index, draft)
+            },
+            onDelete = request.index?.let { index ->
+                {
+                    editor = null
+                    actions.removeCourse(index)
+                }
+            },
+            onDismiss = { editor = null }
         )
     }
 }
+
+/** Which course the editor is open on: a null index is 添加, a null course is the blank form. */
+private data class CourseEditorRequest(val index: Int?, val course: TimetableCourse?)
+
+/** The course's own position in the timetable, or null when it is not in there at all. */
+private fun courseIndexIn(timetable: Timetable?, course: TimetableCourse): Int? =
+    timetable?.courses?.indexOf(course)?.takeIf { it >= 0 }
 
 // ---------------------------------------------------------------------------------------------
 // Timetable sections
@@ -658,8 +739,8 @@ private fun TodayCourseRow(course: TimetableCourse, tint: CourseTint, onClick: (
         Box(Modifier.width(3.dp).height(36.dp).background(tint.rule, CampusRadius.pillShape))
         Spacer(Modifier.width(CampusSpace.md))
         val periodWidth = with(LocalDensity.current) { TodayPeriodColumnWidth.toDp() }
-        // One line, and the whole label off the course itself: splitting it into a bare "3" plus a
-        // "节" underneath would leave a 无节次 course showing a stray 节 under a number it has not got.
+        // One line, and the whole label off the course itself: a bare "3" with a "节" underneath
+        // would cost the row a second line to say what 第3节 already says.
         Text(
             course.periodLabel,
             modifier = Modifier.width(periodWidth),
@@ -678,7 +759,7 @@ private fun TodayCourseRow(course: TimetableCourse, tint: CourseTint, onClick: (
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                course.detailLabel.ifBlank { "教师、教室未识别" },
+                course.detailLabel.ifBlank { "教师、教室未填写" },
                 style = MaterialTheme.typography.bodySmall,
                 color = palette.textTertiary,
                 maxLines = 1,
@@ -718,8 +799,7 @@ private fun WeekGridCard(
                 SectionLabel("周课表")
                 Spacer(Modifier.weight(1f))
                 Text(
-                    // The 无节次 row is a row, not a 节次, so it never counts towards the period total.
-                    "${grid.days.size} 天 · 第 ${grid.periods.count { it != TIMETABLE_PERIOD_NONE }} 节",
+                    "${grid.days.size} 天 · 第 ${grid.periods.size} 节",
                     style = MaterialTheme.typography.bodySmall,
                     color = palette.textTertiary
                 )
@@ -811,23 +891,16 @@ private fun WeekGridCard(
     }
 }
 
-/** The 节次 gutter label: a number, or 无节次 wrapped onto two lines in a gutter this narrow. */
+/** The 节次 gutter label: the number of the row beside it, in a gutter this narrow. */
 @Composable
 private fun PeriodGutterLabel(period: Int) {
     val palette = LocalCampusPalette.current
-    val noPeriod = period == TIMETABLE_PERIOD_NONE
     Text(
         gutterPeriodLabel(period),
-        // The gutter is 30dp wide, so 无节次 is set a step smaller than the digits beside it and is
-        // allowed to wrap onto two lines rather than ellipsise away its last character once the
-        // user turns the font scale up.
-        style = MaterialTheme.typography.labelSmall.copy(
-            fontSize = if (noPeriod) 8.sp else 11.sp,
-            lineHeight = if (noPeriod) 10.sp else 14.sp
-        ),
+        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, lineHeight = 14.sp),
         color = palette.textTertiary,
         textAlign = TextAlign.Center,
-        maxLines = if (noPeriod) 2 else 1,
+        maxLines = 1,
         overflow = TextOverflow.Ellipsis
     )
 }
@@ -938,12 +1011,10 @@ internal fun gridContentWidth(dayCount: Int, availableWidth: Dp): Dp {
 }
 
 /**
- * The 节次 gutter label for one row. [TIMETABLE_PERIOD_NONE] is the 无节次 row — a course the
- * recognition placed in no 节次 — and every other row shows its own number. The wording matches
- * [TimetableCourse.periodLabel], which is the same label for a whole course.
+ * The 节次 gutter label for one row: that period's own number, the same number
+ * [TimetableCourse.periodLabel] prints for the period it starts at.
  */
-internal fun gutterPeriodLabel(period: Int): String =
-    if (period == TIMETABLE_PERIOD_NONE) GridNoPeriodLabel else "$period"
+internal fun gutterPeriodLabel(period: Int): String = "$period"
 
 /**
  * How many lines a course name gets in a week of this many columns.
@@ -1075,7 +1146,13 @@ private fun PreviewCard(
 }
 
 @Composable
-private fun EmptyTimetableCard(onPick: () -> Unit, onShoot: (() -> Unit)?, busy: Boolean) {
+private fun EmptyTimetableCard(
+    onImportWord: () -> Unit,
+    onPick: () -> Unit,
+    onShoot: (() -> Unit)?,
+    busy: Boolean,
+    importing: Boolean
+) {
     val palette = LocalCampusPalette.current
     CampusCard {
         Column(Modifier.padding(CampusSpace.lg), verticalArrangement = Arrangement.spacedBy(CampusSpace.lg)) {
@@ -1090,25 +1167,26 @@ private fun EmptyTimetableCard(onPick: () -> Unit, onShoot: (() -> Unit)?, busy:
                         modifier = Modifier.semantics { heading() }
                     )
                     Text(
-                        "拍一张课程表照片，AI 识别后生成周课表",
+                        "导入教务系统导出的 Word 课表，或拍一张照片识别",
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.textTertiary
                     )
                 }
             }
             Column(verticalArrangement = Arrangement.spacedBy(CampusSpace.sm)) {
-                HintLine("照片越清晰、越正对，识别越准确；看不清的内容不会凭空补全。")
-                HintLine("识别结果只保存在这台手机上，可以随时重新识别或删除。")
-                HintLine("识别后可以按周查看，并自动定位到当前周。")
+                HintLine("教务系统导出的 .doc / .docx 课表可以直接导入，导入后能按周查看。")
+                HintLine("也可以拍一张课程表照片识别；照片越清晰、越正对，识别越准确。")
+                HintLine("导入和识别的结果都只保存在这台手机上，可以随时修改或删除。")
             }
+            // 导入 Word 是这份课表本来的出处，也是唯一不需要网络和 API Key 的入口，所以它是主按钮。
+            CampusPrimaryButton(
+                title = if (importing) "正在导入…" else "导入 Word 课表",
+                onClick = onImportWord,
+                enabled = !busy,
+                busy = importing
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(CampusSpace.sm)) {
-                CampusPrimaryButton(
-                    title = "选择图片",
-                    onClick = onPick,
-                    busy = busy,
-                    showProgress = false,
-                    modifier = Modifier.weight(1f)
-                )
+                OutlinedActionButton("选择图片", Icons.Outlined.PhotoLibrary, onPick, Modifier.weight(1f), enabled = !busy)
                 if (onShoot != null) {
                     OutlinedActionButton("拍照", Icons.Outlined.PhotoCamera, onShoot, Modifier.weight(1f), enabled = !busy)
                 }
@@ -1148,21 +1226,41 @@ private fun LoadingCard() {
     }
 }
 
-/** 课表管理: replace the photo, recognise it again, or take the timetable off this device. */
+/** 课表管理: swap in a fresh 课表 by Word or photo, fix what it read, recognise it again, or delete. */
 @Composable
 private fun ManageCard(
     hasPreview: Boolean,
     busy: Boolean,
+    importing: Boolean,
     captureSupported: Boolean,
+    onImportWord: () -> Unit,
     onPick: () -> Unit,
     onShoot: () -> Unit,
     onRetry: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onAddCourse: () -> Unit
 ) {
     val palette = LocalCampusPalette.current
     CampusCard {
         Column(Modifier.padding(CampusSpace.lg), verticalArrangement = Arrangement.spacedBy(CampusSpace.md)) {
             SectionLabel("课表管理")
+            // 换一份课表通常是从教务系统再导出一份 Word，所以导入排在所有识别动作之前：它不需要
+            // 相机，也不需要网络。
+            OutlinedActionButton(
+                title = if (importing) "正在导入…" else "导入 Word 课表",
+                icon = Icons.Outlined.Description,
+                onClick = onImportWord,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !busy
+            )
+            // A read is allowed to be wrong, so the manual route comes before the recognition ones:
+            // typing a missing 上课地点 must never require another photo or another export.
+            OutlinedActionButton("添加课程", Icons.Outlined.Add, onAddCourse, Modifier.fillMaxWidth(), enabled = !busy)
+            Text(
+                "导入或识别有出入的地方都可以手动补正，包括上课地点；不会影响其他课程。",
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.textTertiary
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(CampusSpace.sm)) {
                 OutlinedActionButton("换一张图片", Icons.Outlined.PhotoLibrary, onPick, Modifier.weight(1f), enabled = !busy)
                 if (captureSupported) {
@@ -1374,14 +1472,380 @@ private fun NoticeRow(text: String, onDismiss: () -> Unit) {
     }
 }
 
-/** Course detail: everything the recognition read out of the photo, plus its place in the term. */
+// ---------------------------------------------------------------------------------------------
+// Course editing
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * One course as the editor holds it: a string per visible field, exactly as typed. The panel keeps
+ * this and nothing else, so [toDraft] is the single place a form becomes something the controller
+ * can be handed.
+ */
+internal data class CourseEditFields(
+    val name: String = "",
+    val teacher: String = "",
+    val room: String = "",
+    val weekday: String = "",
+    val startPeriod: String = "",
+    val endPeriod: String = "",
+    val startWeek: String = "",
+    val endWeek: String = "",
+    val parity: WeekParity = WeekParity.ALL
+)
+
+/** A course nobody has filled in yet: 周一 第 1-2 节，第 1-16 周，每周. */
+internal fun newCourseFields(): CourseEditFields = CourseEditFields(
+    weekday = "1",
+    startPeriod = "1",
+    endPeriod = "2",
+    startWeek = "1",
+    endWeek = "16",
+    parity = WeekParity.ALL
+)
+
+/** The same fields, filled from a course the recognition — or an earlier edit — already produced. */
+internal fun courseEditFields(course: TimetableCourse): CourseEditFields = CourseEditFields(
+    name = course.name,
+    teacher = course.teacher,
+    room = course.room,
+    weekday = course.weekday.toString(),
+    startPeriod = course.startPeriod.toString(),
+    endPeriod = course.endPeriod.toString(),
+    startWeek = course.startWeek.toString(),
+    endWeek = course.endWeek.toString(),
+    parity = course.parity
+)
+
+/**
+ * The form as a draft, or null while something required is still empty or is not a number at all.
+ *
+ * Only 「填了没有」 is decided here. Whether a value is inside the range the timetable prints, and
+ * whether the slot it claims is already taken, is the controller's call: it owns the whole
+ * timetable and is the only one that can say why a course was refused. A number is passed on
+ * exactly as typed, so 99 reaches the controller as 99 rather than being quietly pulled back into
+ * range behind the user's back.
+ */
+internal fun CourseEditFields.toDraft(): TimetableCourseDraft? {
+    val courseName = name.trim()
+    if (courseName.isEmpty()) return null
+    val courseWeekday = numberOrNull(weekday) ?: return null
+    val firstPeriod = numberOrNull(startPeriod) ?: return null
+    val lastPeriod = numberOrNull(endPeriod) ?: return null
+    val firstWeek = numberOrNull(startWeek) ?: return null
+    val lastWeek = numberOrNull(endWeek) ?: return null
+    return TimetableCourseDraft(
+        name = courseName,
+        teacher = teacher.trim(),
+        room = room.trim(),
+        weekday = courseWeekday.toString(),
+        startPeriod = firstPeriod.toString(),
+        endPeriod = lastPeriod.toString(),
+        startWeek = firstWeek.toString(),
+        endWeek = lastWeek.toString(),
+        // 单双周 is read as 单 / 双 / 每 by the model contract, so the panel sends the same words it
+        // shows on its three choices.
+        parity = parityLabel(parity)
+    )
+}
+
+private fun numberOrNull(text: String): Int? = text.trim().toIntOrNull()
+
+/** The 星期 hint: the range, plus which day the number currently names. */
+private fun weekdayHint(text: String): String {
+    val day = TIMETABLE_WEEKDAYS.getOrNull((numberOrNull(text) ?: 0) - 1)
+    return if (day == null) "1-7，1 表示周一" else "1-7，现在是$day"
+}
+
+/**
+ * 手动增改一门课. A 课表 read — from a photo or from a Word file — is allowed to be wrong, so every
+ * value it produced has to be correctable by hand, 上课地点 above all: a photo often misreads it and
+ * the 教务系统's print-out often leaves it empty.
+ *
+ * Nothing is written until 保存: [onSave] hands the draft to the controller, which owns the range
+ * and conflict checks and reports a refusal through the page's own message line. 取消, back and a
+ * swipe down all just close the sheet, so a half-finished form never touches the timetable.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CourseEditorSheet(
+    index: Int?,
+    course: TimetableCourse?,
+    tint: CourseTint,
+    onSave: (TimetableCourseDraft) -> Unit,
+    onDelete: (() -> Unit)?,
+    onDismiss: () -> Unit
+) {
+    val palette = LocalCampusPalette.current
+    var fields by remember(course) {
+        mutableStateOf(course?.let { courseEditFields(it) } ?: newCourseFields())
+    }
+    // A blank form is not a mistake yet, so the marks only appear once 保存 has been pressed.
+    var submitted by remember(course) { mutableStateOf(false) }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        shape = CampusRadius.lgShape,
+        containerColor = palette.surface,
+        contentColor = palette.textPrimary
+    ) {
+        Column(
+            // A landscape phone, a 2x font scale or an open keyboard can each make this form taller
+            // than the window. The IME padding sits outside the scroll container, so the keyboard
+            // takes the bottom of the sheet and the field being edited still scrolls above it.
+            Modifier.fillMaxWidth()
+                .imePadding()
+                .verticalScroll(rememberScrollState())
+                .padding(start = CampusSpace.xl, end = CampusSpace.xl, bottom = CampusSpace.xxl),
+            verticalArrangement = Arrangement.spacedBy(CampusSpace.lg)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(width = 4.dp, height = 40.dp).background(tint.rule, CampusRadius.pillShape))
+                Spacer(Modifier.width(CampusSpace.md))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        if (index == null) "添加课程" else "编辑课程",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = palette.textPrimary,
+                        modifier = Modifier.semantics { heading() }
+                    )
+                    Text(
+                        if (index == null) "课表上没有的课可以在这里补上"
+                        else "课表上不对的地方可以在这里改，改完保存",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.textTertiary
+                    )
+                }
+            }
+            CourseField(
+                value = fields.name,
+                onValueChange = { fields = fields.copy(name = it) },
+                label = "课程名",
+                placeholder = "例如：高等数学",
+                supporting = "课表上怎么写就怎么写",
+                error = if (submitted && fields.name.isBlank()) "请填写课程名" else null
+            )
+            // 上课地点 is the field a photo most often loses and the one the printed 课表 leaves empty,
+            // so it sits directly under the name rather than at the bottom of a list of details.
+            CourseField(
+                value = fields.room,
+                onValueChange = { fields = fields.copy(room = it) },
+                label = "上课地点",
+                placeholder = "例如：文二楼 302",
+                supporting = "没有可以先留空，之后随时补上",
+                leadingIcon = Icons.Outlined.Place
+            )
+            CourseField(
+                value = fields.teacher,
+                onValueChange = { fields = fields.copy(teacher = it) },
+                label = "任课教师",
+                placeholder = "例如：张三",
+                supporting = "选填"
+            )
+            CourseField(
+                value = fields.weekday,
+                onValueChange = { fields = fields.copy(weekday = it) },
+                label = "星期",
+                supporting = weekdayHint(fields.weekday),
+                error = if (submitted && numberOrNull(fields.weekday) == null) "请输入数字" else null,
+                keyboardType = KeyboardType.Number
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(CampusSpace.md)) {
+                CourseField(
+                    value = fields.startPeriod,
+                    onValueChange = { fields = fields.copy(startPeriod = it) },
+                    label = "开始节次",
+                    supporting = "1-13",
+                    error = if (submitted && numberOrNull(fields.startPeriod) == null) "请输入数字" else null,
+                    keyboardType = KeyboardType.Number,
+                    modifier = Modifier.weight(1f)
+                )
+                CourseField(
+                    value = fields.endPeriod,
+                    onValueChange = { fields = fields.copy(endPeriod = it) },
+                    label = "结束节次",
+                    supporting = "1-13",
+                    error = if (submitted && numberOrNull(fields.endPeriod) == null) "请输入数字" else null,
+                    keyboardType = KeyboardType.Number,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(CampusSpace.md)) {
+                CourseField(
+                    value = fields.startWeek,
+                    onValueChange = { fields = fields.copy(startWeek = it) },
+                    label = "开始周",
+                    supporting = "1-30",
+                    error = if (submitted && numberOrNull(fields.startWeek) == null) "请输入数字" else null,
+                    keyboardType = KeyboardType.Number,
+                    modifier = Modifier.weight(1f)
+                )
+                CourseField(
+                    value = fields.endWeek,
+                    onValueChange = { fields = fields.copy(endWeek = it) },
+                    label = "结束周",
+                    supporting = "1-30",
+                    error = if (submitted && numberOrNull(fields.endWeek) == null) "请输入数字" else null,
+                    keyboardType = KeyboardType.Number,
+                    imeAction = ImeAction.Done,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(CampusSpace.sm)) {
+                SectionLabel("单双周")
+                ParityChoiceRow(selected = fields.parity, onSelect = { fields = fields.copy(parity = it) })
+            }
+            Text(
+                "保存只检查必填项；节次、周次超出范围或与别的课冲突时，课表会说明原因，回来改一下即可。",
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.textTertiary
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(CampusSpace.sm)) {
+                CampusPrimaryButton(
+                    title = "保存",
+                    onClick = {
+                        val ready = fields.toDraft()
+                        if (ready == null) submitted = true else onSave(ready)
+                    },
+                    showProgress = false,
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedActionButton("取消", Icons.Outlined.Close, onDismiss, Modifier.weight(1f))
+            }
+            if (onDelete != null) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDelete, modifier = Modifier.heightIn(min = 44.dp)) {
+                        Icon(
+                            Icons.Outlined.Delete,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = palette.danger
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("删除这门课", color = palette.danger, style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One line of the course form. Every colour the stock Material field paints is named here rather
+ * than inherited, and the range hint is part of the field at all times, so a validation mark never
+ * moves the rest of the form under the user's finger.
+ */
+@Composable
+private fun CourseField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    placeholder: String? = null,
+    supporting: String? = null,
+    error: String? = null,
+    keyboardType: KeyboardType = KeyboardType.Text,
+    imeAction: ImeAction = ImeAction.Next,
+    leadingIcon: ImageVector? = null
+) {
+    val palette = LocalCampusPalette.current
+    val placeholderContent: (@Composable () -> Unit)? = if (placeholder != null) ({
+        Text(placeholder, style = MaterialTheme.typography.bodyMedium)
+    }) else null
+    val leadingContent: (@Composable () -> Unit)? = if (leadingIcon != null) ({
+        Icon(
+            leadingIcon,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = palette.textTertiary
+        )
+    }) else null
+    val hint = error ?: supporting
+    val supportingContent: (@Composable () -> Unit)? = if (hint != null) ({
+        Text(hint, style = MaterialTheme.typography.bodySmall)
+    }) else null
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        placeholder = placeholderContent,
+        leadingIcon = leadingContent,
+        supportingText = supportingContent,
+        isError = error != null,
+        singleLine = true,
+        textStyle = MaterialTheme.typography.bodyMedium,
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = imeAction),
+        colors = courseFieldColors(),
+        modifier = modifier.fillMaxWidth()
+    )
+}
+
+/** 每周 / 单周 / 双周 as one choice, the same single-select language the week strip uses. */
+@Composable
+private fun ParityChoiceRow(selected: WeekParity, onSelect: (WeekParity) -> Unit) {
+    val palette = LocalCampusPalette.current
+    Row(
+        Modifier.fillMaxWidth().selectableGroup(),
+        horizontalArrangement = Arrangement.spacedBy(CampusSpace.sm)
+    ) {
+        WeekParity.entries.forEach { parity ->
+            val isSelected = parity == selected
+            Surface(
+                color = if (isSelected) palette.selected else palette.muted,
+                contentColor = if (isSelected) palette.onAccentWash else palette.textSecondary,
+                shape = CampusRadius.mdShape,
+                border = if (isSelected) BorderStroke(1.dp, palette.accentBorder) else null,
+                modifier = Modifier
+                    .weight(1f)
+                    .selectable(selected = isSelected, role = Role.RadioButton, onClick = { onSelect(parity) })
+            ) {
+                Box(Modifier.fillMaxWidth().heightIn(min = 44.dp), contentAlignment = Alignment.Center) {
+                    Text(parityLabel(parity), style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun courseFieldColors(): TextFieldColors {
+    val palette = LocalCampusPalette.current
+    return OutlinedTextFieldDefaults.colors(
+        focusedTextColor = palette.textPrimary,
+        unfocusedTextColor = palette.textPrimary,
+        cursorColor = palette.accent,
+        selectionColors = TextSelectionColors(
+            handleColor = palette.accent,
+            backgroundColor = palette.accent.copy(alpha = 0.30f)
+        ),
+        focusedContainerColor = palette.surface,
+        unfocusedContainerColor = palette.surface,
+        errorContainerColor = palette.surface,
+        focusedBorderColor = palette.accent,
+        unfocusedBorderColor = palette.borderStrong,
+        errorBorderColor = palette.danger,
+        focusedLabelColor = palette.onAccentWash,
+        unfocusedLabelColor = palette.textSecondary,
+        errorLabelColor = palette.danger,
+        focusedPlaceholderColor = palette.textTertiary,
+        unfocusedPlaceholderColor = palette.textTertiary,
+        focusedSupportingTextColor = palette.textTertiary,
+        unfocusedSupportingTextColor = palette.textTertiary,
+        errorSupportingTextColor = palette.danger,
+        focusedLeadingIconColor = palette.textSecondary,
+        unfocusedLeadingIconColor = palette.textTertiary
+    )
+}
+
+/** Course detail: everything the 课表 holds about one course, plus its place in the term. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CourseDetailSheet(
     course: TimetableCourse,
     week: Int,
     tint: CourseTint,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onEdit: () -> Unit
 ) {
     val palette = LocalCampusPalette.current
     val runsNow = course.runsInWeek(week)
@@ -1425,9 +1889,12 @@ private fun CourseDetailSheet(
                 DetailRow("上课时间", "${course.weekdayLabel} ${course.periodLabel}")
                 DetailRow("上课周次", course.weekLabel.trim())
                 DetailRow("单双周", parityLabel(course.parity))
-                DetailRow("任课教师", course.teacher.ifBlank { "未识别" })
-                DetailRow("上课地点", course.room.ifBlank { "未识别" })
+                DetailRow("任课教师", course.teacher.ifBlank { "未填写" })
+                DetailRow("上课地点", course.room.ifBlank { "未填写" })
             }
+            // Whether the course came out of a photo or a Word file, the read is allowed to be wrong,
+            // so this sheet is never the end of the story: every field above can be corrected by hand.
+            OutlinedActionButton("编辑这门课", Icons.Outlined.Edit, onEdit, Modifier.fillMaxWidth())
         }
     }
 }
@@ -1705,3 +2172,81 @@ private suspend fun loadPreparedImage(context: Context, uri: Uri, discardAfterwa
             if (discardAfterwards) TimetableImageLoader.discardCaptureTarget(context, uri)
         }
     }
+
+/** The picked Word file's name and bytes, or the notice that stands in for them. */
+private sealed interface WordPick {
+    data class Ready(val fileName: String, val bytes: ByteArray) : WordPick
+    data class Failed(val message: String) : WordPick
+}
+
+/**
+ * Reading a picked file is blocking and unbounded, so it runs off the main thread and never throws
+ * out. The size is checked twice on purpose: once from what the provider declares, so a huge file is
+ * never read at all, and once from what actually arrived, because that declaration can be missing.
+ */
+private suspend fun readWordPick(context: Context, uri: Uri): WordPick = withContext(Dispatchers.IO) {
+    val fileName = wordColumn(context, uri, OpenableColumns.DISPLAY_NAME)?.takeIf { it.isNotBlank() }
+        ?: "课表文件"
+    try {
+        val declared = wordColumn(context, uri, OpenableColumns.SIZE)?.toLongOrNull()
+        declared?.let { WordImportFiles.oversizeNotice(fileName, it)?.let { notice -> return@withContext WordPick.Failed(notice) } }
+        val stream = context.contentResolver.openInputStream(uri)
+            ?: return@withContext WordPick.Failed("「$fileName」读不出来，请换一个文件。")
+        val bytes = stream.use { WordImportFiles.readAtMost(it) }
+            ?: return@withContext WordPick.Failed(WordImportFiles.oversizeNotice(fileName))
+        WordPick.Ready(fileName, bytes)
+    } catch (_: OutOfMemoryError) {
+        WordPick.Failed(WordImportFiles.oversizeNotice(fileName))
+    } catch (_: Exception) {
+        WordPick.Failed("「$fileName」读不出来，请换一个文件。")
+    }
+}
+
+/** One column of the picked file's provider row, or null when the provider does not offer it. */
+private fun wordColumn(context: Context, uri: Uri, column: String): String? = try {
+    context.contentResolver.query(uri, arrayOf(column), null, null, null)
+        ?.use { cursor -> if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getString(0) else null }
+} catch (_: Exception) { null }
+
+/**
+ * The half of the Word import that has nothing to do with Android: which types the picker offers, how
+ * much of a file may be held, and what a file too large to read is told. It sits beside the screen
+ * because that is its only caller, and it is internal so the decisions can be held without a device.
+ */
+internal object WordImportFiles {
+
+    /**
+     * The picker's own type filter. The wildcard is last rather than first: a file manager that
+     * matches on the whole list would offer every file, while one that only un-greys a file its own
+     * type index knows still has the two Word types to match. What the file really is, the bytes say.
+     */
+    val MIME_TYPES: Array<String> = arrayOf(
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "*/*"
+    )
+
+    /**
+     * Everything [input] holds, or null as soon as it holds more than [limit] bytes. `readBytes()`
+     * would take the heap down with a stream whose length was never declared, and the importer refuses
+     * anything past [WordDocuments.MAX_BYTES] anyway.
+     */
+    fun readAtMost(input: InputStream, limit: Int = WordDocuments.MAX_BYTES): ByteArray? {
+        val out = ByteArrayOutputStream()
+        val buffer = ByteArray(64 * 1024)
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) return out.toByteArray()
+            if (out.size() + read > limit) return null
+            out.write(buffer, 0, read)
+        }
+    }
+
+    /** Why a file of [size] bytes is not worth reading, or null while it is inside the limit. */
+    fun oversizeNotice(fileName: String, size: Long): String? =
+        if (size <= WordDocuments.MAX_BYTES) null else oversizeNotice(fileName)
+
+    /** The same notice for a file whose length only became clear part-way through being read. */
+    fun oversizeNotice(fileName: String): String =
+        "「$fileName」超过 ${WordDocuments.MAX_BYTES / (1024 * 1024)} MB，课表文件没有这么大，请换一个文件。"
+}

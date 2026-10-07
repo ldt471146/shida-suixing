@@ -282,27 +282,69 @@ class TimetableResponseReaderTest {
         assertEquals(WeekParity.ALL, byName.getValue("每周都上课-fixture").parity)
     }
 
-    @Test fun aCourseWithoutPeriodsKeepsItsZeroesInsteadOfLosingThem() {
+    @Test fun aCourseInTheUnnumberedRowStartsAtTheFirstPeriod() {
         val payload = """{"is_timetable":true,"courses":[
               {"name":"无节次课-fixture","teacher":"教师丙","room":"","weekday":1,
                "start_period":0,"end_period":0,"start_week":2,"end_week":18,"parity":"all"}]}"""
         val course = TimetableResponseReader.read(envelopeOf(payload), TIME).courses.single()
-        // 0 is 无节次, an answer the timetable really gives — never a missing value.
-        assertEquals(0, course.startPeriod)
-        assertEquals(0, course.endPeriod)
-        assertEquals("无节次", course.periodLabel)
+        // The model says 0 for the sheet's unnumbered top row. Periods only run 1..13, so the course
+        // is put at the first period rather than costing the user the whole timetable.
+        assertEquals(1, course.startPeriod)
+        assertEquals(1, course.endPeriod)
+        assertEquals("第1节", course.periodLabel)
+    }
+
+    @Test fun anUnnumberedCourseMovesOffASlotThatIsAlreadyTaken() {
+        // Monday 上午1-2 is taken, so pinning the unnumbered course to period 1 would make the whole
+        // timetable a conflict and lose every course. It takes Monday's first free period instead.
+        val payload = """{"is_timetable":true,"courses":[
+              {"name":"上午课-fixture","weekday":1,"start_period":1,"end_period":2,
+               "start_week":2,"end_week":18},
+              {"name":"无节次课-fixture","teacher":"教师丙","weekday":1,
+               "start_period":0,"end_period":0,"start_week":2,"end_week":18}]}"""
+
+        val timetable = TimetableResponseReader.read(envelopeOf(payload), TIME)
+
+        assertEquals(2, timetable.courseCount)
+        val moved = timetable.courses.single { it.teacher == "教师丙" }
+        assertEquals(3, moved.startPeriod)
+        assertEquals(3, moved.endPeriod)
+    }
+
+    @Test fun anUnnumberedCourseIgnoresWhatAnotherDayHasTaken() {
+        val payload = """{"is_timetable":true,"courses":[
+              {"name":"周二上午课-fixture","weekday":2,"start_period":1,"end_period":2,
+               "start_week":2,"end_week":18},
+              {"name":"无节次课-fixture","teacher":"教师丙","weekday":1,
+               "start_period":0,"end_period":0,"start_week":2,"end_week":18}]}"""
+
+        val timetable = TimetableResponseReader.read(envelopeOf(payload), TIME)
+
+        // Monday is empty, so the unnumbered course still gets the first period.
+        assertEquals(1, timetable.courses.single { it.teacher == "教师丙" }.startPeriod)
+    }
+
+    @Test fun theUnnumberedRowLabelIsUnderstoodAsWellAsItsZero() {
+        val payload = """{"is_timetable":true,"courses":[
+              {"name":"无节次课-fixture","teacher":"教师丙","weekday":5,
+               "start_period":"无节次","end_period":"无节次","start_week":2,"end_week":18}]}"""
+
+        val timetable = TimetableResponseReader.read(envelopeOf(payload), TIME)
+
+        assertEquals(1, timetable.courses.single().startPeriod)
+        assertEquals(5, timetable.courses.single().weekday)
     }
 
     @Test fun theRealCapturedResponseStillYieldsEveryCourse() {
         val timetable = TimetableResponseReader.read(envelopeOf(REAL_CAPTURED_RESPONSE), TIME)
         assertEquals("2026-2027秋季学期", timetable.term)
         assertEquals(8, timetable.courseCount)
-        // 无节次: periods 0-0 with a real week range, printed above 上午1 on the sheet.
+        // The sheet prints this one above 上午1 in its unnumbered row, so it lands on the first period.
         val withoutPeriods = timetable.courses.single { it.teacher == "朱红艳" }
         assertEquals("深度学习1班", withoutPeriods.name)
         assertEquals(1, withoutPeriods.weekday)
-        assertEquals(0, withoutPeriods.startPeriod)
-        assertEquals(0, withoutPeriods.endPeriod)
+        assertEquals(1, withoutPeriods.startPeriod)
+        assertEquals(1, withoutPeriods.endPeriod)
         assertEquals(2, withoutPeriods.startWeek)
         assertEquals(18, withoutPeriods.endWeek)
         assertEquals(WeekParity.ALL, withoutPeriods.parity)

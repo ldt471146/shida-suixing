@@ -218,6 +218,25 @@ class TimetableImageLoaderTest {
         assertTrue(failure.cause is OutOfMemoryError)
     }
 
+    @Test fun anUntouchedSourceStillHasToRespectTheEndpointPixelCeiling() {
+        // A 1080x20000 scroll capture samples down to a tiny bitmap, so nothing looks resized while
+        // the bytes about to be uploaded are still 20000 px on the long side.
+        assertTrue(TimetableImageLoader.mayPassThrough(rotationDegrees = 0, resized = false, sourceSide = 4_096))
+        assertTrue(TimetableImageLoader.mayPassThrough(rotationDegrees = 0, resized = false, sourceSide = 8_192))
+        assertTrue(!TimetableImageLoader.mayPassThrough(rotationDegrees = 0, resized = false, sourceSide = 8_193))
+        assertTrue(!TimetableImageLoader.mayPassThrough(rotationDegrees = 0, resized = false, sourceSide = 20_000))
+        // A rotated or resized source has to be re-encoded anyway, so it is never a pass-through.
+        assertTrue(!TimetableImageLoader.mayPassThrough(rotationDegrees = 90, resized = false, sourceSide = 1_200))
+        assertTrue(!TimetableImageLoader.mayPassThrough(rotationDegrees = 0, resized = true, sourceSide = 1_200))
+        assertEquals(8_192, VisionImageLimits.MAX_SIDE_PX)
+    }
+
+    @Test fun theUploadTargetStaysUnderTheEndpointCeiling() {
+        // The downscale target must be lower than the ceiling, or every large photo would be uploaded
+        // past the limit the endpoint documents.
+        assertTrue(VisionImageLimits.TARGET_SIDE_PX < VisionImageLimits.MAX_SIDE_PX)
+    }
+
     @Test fun aGuardedStepThatSucceedsReturnsItsValue() {
         assertEquals("seven", TimetableImageLoader.withMemoryGuard { "sev" + "en" })
     }

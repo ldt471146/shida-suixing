@@ -6,6 +6,7 @@ import com.google.gson.JsonParser
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.util.Base64
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -87,7 +88,8 @@ class TimetableVisionClientTest {
         assertTrue(systemPrompt.contains("day_headers"))
         assertTrue(systemPrompt.contains("period_labels"))
         assertTrue("the school's own period labels must be spelled out", systemPrompt.contains("下午6"))
-        assertTrue("an unnumbered row has to map to period 0", systemPrompt.contains("无节次"))
+        assertTrue("an unnumbered row has to be pinned to the first period", systemPrompt.contains("无节次"))
+        assertTrue("period 0 must not be offered as an answer", systemPrompt.contains("不要写 0"))
 
         val user = messages[1].asJsonObject
         assertEquals("user", user.get("role").asString)
@@ -214,8 +216,8 @@ class TimetableVisionClientTest {
     @Test fun anEmptyAnswerFromTheDefaultModelIsRetriedOnTheSecondOne() = runTest {
         val transport = SequencedTransport(
             listOf(
-                // The route the default model takes on a dense real timetable: the whole output budget
-                // goes to reasoning and the user-visible content comes back empty.
+                // An empty answer is the shape a request takes when it never reaches a verdict, so the
+                // fallback route gets its chance rather than the user seeing "please retry".
                 { VisionHttpResponse(200, envelope("")) },
                 { VisionHttpResponse(200, envelope(VALID_PAYLOAD)) }
             )
@@ -227,6 +229,89 @@ class TimetableVisionClientTest {
         assertNull(transport.bodies[0].get("reasoning_effort"))
         assertEquals("high", transport.bodies[1].get("reasoning_effort").asString)
         assertEquals(2, timetable.courseCount)
+    }
+
+    /**
+     * The recorded shape of the failure that started this work, against a real 1700x710 GXNU
+     * timetable photo: `finish_reason=length`, `completion_thinking_tokens=8192`, `content` empty.
+     * It is the only state that must never be mistaken for "this is not a timetable".
+     */
+    @Test fun theRecordedBudgetExhaustedAnswerIsReportedAsEmptyRatherThanAsNoTimetable() = runTest {
+        val recorded = JsonObject().apply {
+            addProperty("id", "fixture-budget-exhausted")
+            addProperty("object", "chat.completion")
+            addProperty("model", MODEL)
+            add("usage", JsonObject().apply {
+                addProperty("completion_thinking_tokens", 8192)
+                addProperty("reasoning_tokens", 8192)
+            })
+            add("choices", JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("index", 0)
+                    addProperty("finish_reason", "length")
+                    add("message", JsonObject().apply {
+                        addProperty("role", "assistant")
+                        addProperty("content", "")
+                    })
+                })
+            })
+        }.toString()
+        val transport = SequencedTransport(
+            listOf({ VisionHttpResponse(200, recorded) }, { VisionHttpResponse(200, recorded) })
+        )
+
+        val failure = refusal(client(transport))
+        assertEquals(TimetableVisionFailure.EMPTY_RESPONSE, failure.failure)
+        // Both routes were asked, because neither one reached a verdict.
+        assertEquals(listOf("glm-5v-turbo", "deepseek-v4.1-flash"), transport.bodies.map(::modelOf))
+    }
+
+    @Test fun aMalformedAnswerIsNotRetriedOnAnotherModel() = runTest {
+        // The model read the photo and answered badly; a different model is a coin flip, not a fix.
+        val transport = SequencedTransport(listOf({ VisionHttpResponse(200, envelope("not json at all")) }))
+
+        assertEquals(TimetableVisionFailure.MALFORMED_RESPONSE, refusal(client(transport)).failure)
+        assertEquals(1, transport.bodies.size)
+    }
+
+    @Test fun aRateLimitIsNotRetriedImmediately() = runTest {
+        val transport = SequencedTransport(listOf({ VisionHttpResponse(429, "{}") }))
+
+        assertEquals(TimetableVisionFailure.RATE_LIMITED, refusal(client(transport)).failure)
+        // The retry would meet the same limit; the user is told to wait instead.
+        assertEquals(1, transport.bodies.size)
+    }
+
+    @Test fun aHangingModelGivesItsSlotToTheNextOne() = runTest {
+        var calls = 0
+        val transport = VisionHttpTransport { _ ->
+            calls++
+            if (calls == 1) awaitCancellation()
+            VisionHttpResponse(200, envelope(VALID_PAYLOAD))
+        }
+
+        val timetable = client(transport).recognize(image(), KEY)
+
+        // Without a per-attempt bound the first model would hold the ladder until the caller's own
+        // watchdog fired, and the fallback would never answer.
+        assertEquals(2, calls)
+        assertEquals(2, timetable.courseCount)
+    }
+
+    @Test fun theNoPeriodRowStartsAtTheFirstPeriod() = runTest {
+        // The school's unnumbered top row is labelled 无节次; a model that copies the label out
+        // verbatim must not cost the user the whole timetable.
+        val payload = """
+            {"is_timetable":true,"term":"","courses":[
+              {"name":"深度学习-fixture","teacher":"教师甲","room":"","weekday":1,
+               "start_period":"无节次","end_period":"无节次","start_week":2,"end_week":18}
+            ]}
+        """.trimIndent()
+
+        val timetable = client(200, envelope(payload)).recognize(image(), KEY)
+
+        assertEquals(1, timetable.courses.single().startPeriod)
+        assertEquals(1, timetable.courses.single().endPeriod)
     }
 
     @Test fun aVerdictFromTheDefaultModelIsNotSecondGuessed() = runTest {

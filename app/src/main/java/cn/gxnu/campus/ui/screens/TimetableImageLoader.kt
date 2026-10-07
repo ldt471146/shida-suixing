@@ -95,7 +95,16 @@ internal object TimetableImageLoader {
                 upright.recycle()
             }
         }
-        val upload = uploadCopy(source, format, scaled, untouched = rotation == 0 && !resized)
+        // The original bytes may only travel untouched while they also respect the endpoint's pixel
+        // ceiling. A very tall screenshot (a 1080x20000 scroll capture, say) samples down to a small
+        // bitmap, so nothing looks "resized" — yet the bytes that would be uploaded are still 20000 px
+        // on the long side, which the endpoint refuses with no fallback left to catch it.
+        val upload = uploadCopy(
+            source,
+            format,
+            scaled,
+            untouched = mayPassThrough(rotation, resized, maxOf(bounds.outWidth, bounds.outHeight))
+        )
         val preview = if (maxOf(scaled.width, scaled.height) > PREVIEW_SIDE_PX) {
             val boundsForPreview = VisionImageLimits.fitInside(scaled.width, scaled.height, PREVIEW_SIDE_PX)
             try {
@@ -108,6 +117,14 @@ internal object TimetableImageLoader {
         }
         PreparedTimetableImage(upload, preview)
     }
+
+    /**
+     * Whether the source file's own bytes are a legal upload. `resized` only describes the decoded
+     * bitmap, so a source whose long side is past the endpoint's ceiling must not pass through even
+     * when the decoded copy happens to be small.
+     */
+    fun mayPassThrough(rotationDegrees: Int, resized: Boolean, sourceSide: Int): Boolean =
+        rotationDegrees == 0 && !resized && sourceSide <= VisionImageLimits.MAX_SIDE_PX
 
     /**
      * The payload that goes to the endpoint. A PNG source travels losslessly — as its own bytes when
