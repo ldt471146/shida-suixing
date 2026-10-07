@@ -1,5 +1,7 @@
 package cn.gxnu.campus.network
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -119,6 +121,46 @@ class PortalCompletionMonitorTest {
         assertEquals(1, probes)
     }
 
+    @Test fun aProbeStillOnTheWireWhenThePageClosesPublishesNothing() = runTest {
+        val answer = CompletableDeferred<Boolean>()
+        var probes = 0
+        val monitor = monitorOf { probes++; answer.await() }
+        val watch = monitor.start(backgroundScope)
+        runCurrent()
+        assertEquals(1, probes)
+        assertEquals(PortalCompletion.Checking, monitor.state.value)
+
+        // The page is closed while its first probe is still waiting for the network.
+        monitor.stop()
+        runCurrent()
+        assertTrue(watch.isCancelled)
+
+        // The answer that arrives afterwards belongs to a page that is already gone.
+        answer.complete(true)
+        runCurrent()
+        assertEquals(PortalCompletion.Checking, monitor.state.value)
+
+        advancePastTheDeadline()
+        assertEquals(1, probes)
+        assertEquals(PortalCompletion.Checking, monitor.state.value)
+    }
+
+    @Test fun aVerifierThatIgnoresCancellationCannotPublishAfterThePageClosed() = runTest {
+        // The watch cannot assume how its verifier treats cancellation, and this is the shape that
+        // would otherwise let a torn-down page publish the success it can no longer show.
+        val monitor = monitorOf { try { CompletableDeferred<Boolean>().await() } catch (_: CancellationException) { true } }
+        val watch = monitor.start(backgroundScope)
+        runCurrent()
+        assertEquals(PortalCompletion.Checking, monitor.state.value)
+
+        monitor.stop()
+        runCurrent()
+        assertTrue(watch.isCancelled)
+
+        advancePastTheDeadline()
+        assertEquals(PortalCompletion.Checking, monitor.state.value)
+    }
+
     @Test fun successConfirmsItselfAndReturnsToTheAppWithoutATap() = runTest {
         val monitor = monitorOf { true }
         val watch = monitor.start(backgroundScope)
@@ -142,6 +184,24 @@ class PortalCompletionMonitorTest {
 
         watch.cancel()
         page.cancel()
+    }
+
+    @Test fun aProbeThatAnswersSuccessPastTheDeadlineStillReturnsTheUserToTheApp() = runTest {
+        // The deadline bounds how long the page waits for an answer, not which real answer counts.
+        // A probe the schedule already let out may come back online afterwards, and that is still a
+        // success the user has to be returned for instead of being left on a page they cannot leave.
+        val answer = CompletableDeferred<Boolean>()
+        val monitor = monitorOf { answer.await() }
+        val watch = monitor.start(backgroundScope)
+        runCurrent()
+        advancePastTheDeadline()
+        assertEquals(PortalCompletion.Checking, monitor.state.value)
+
+        answer.complete(true)
+        runCurrent()
+
+        assertEquals(PortalCompletion.Online, monitor.state.value)
+        assertTrue(watch.isCompleted)
     }
 
     @Test fun aPageThatGaveUpIsNeverReturnedFromByItself() = runTest {

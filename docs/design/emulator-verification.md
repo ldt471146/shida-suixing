@@ -39,6 +39,31 @@
 
 本文记录实际设备操作，不替代 Comet Runtime 的候选检查及独立验收。完整单元测试、APK 构建及 lint 的最终结果由 Runtime 保存。
 
+## 0.4.1 检查
+
+2026-10-07，在同一 `gxnu_preview` 模拟器上检查 0.4.1（versionCode 8）。清理构建后 30 个测试套件 318 项全绿，`lintDebug` 0 错误，`assembleRelease` 产出 11,135,050 字节的签名包（证书指纹与 0.4.0 相同）。
+
+本轮修的是用户反馈的两个原始问题的边缘情况，以及一处会丢数据的缺陷：
+
+- **内嵌登录页在旋转后消失**（会丢数据）。`MainActivity` 用普通字段持有页面，且没有声明 `configChanges`，所以旋转会重建 Activity：页面所在的 composition 被销毁、`destroy()` 清掉 `WebStorage`，用户半填的表单和验证码一起丢失，而且这次尝试的结算被跳过。修复方式是给 Activity 声明 `configChanges`（orientation、screenSize、smallestScreenSize、screenLayout、keyboardHidden、navigation、uiMode），不重建就不会有销毁。**density、fontScale、locale 特意不声明**：Compose 在组合开始时就读取这四个值，且本应用有四处按 `fontScale` 布局，这些配置变化本身就需要一次新的 Activity。
+  证据：修复前旋转后页面消失、WebView 渲染进程死亡；修复后竖屏→横屏→竖屏全程页面保持，**渲染进程 pid 始终是同一个**。另外用一项未声明的配置变化（`fontScale` 1.3）作对照：页面仍然结束，但这次只结算一次，不崩溃也不留僵尸页面。
+  独立复核：读取 Android 活动事件日志，旋转前后 `wm_on_create_called` 计数不变、`wm_on_destroy_called` 为 0，确认 Activity 没有被重建。
+
+- **学校认证页没有真正的加载态和错误态**。原来的「加载中」是一个固定 1.2 秒计时器，`onReceivedError` 被置空吞掉。根因比表面更深：主文档由 `shouldInterceptRequest` 拦截提供，打不开的页面会以**内容为空的 502 文档**交给 WebView——它不是网络错误，所以 `onReceivedError` 基本不会触发，而 `onPageFinished` 会在空白页上正常触发。只接回调会把空白页当成「已就绪」。现在由每轮加载的失败闩锁提供真实状态，来源是主文档的 `reply.failure`、主文档的 `onReceivedError`（子资源忽略）和 SSL 取消。
+  用户现在看到：页面打不开 → 危险色胶囊「学校认证页未能打开」+ 中文原因 + 重新加载；页面慢 → 进度胶囊「正在打开学校登录页… 42%」。
+
+- **服务页会先报「未连接」**。运行时还没读完 Wi-Fi 设置时，状态默认是 `NO_WIFI`，而服务页没有像首页那样守 `initializing`，于是同一状态下首页说真话、服务页说假话。已对齐。
+
+- **「我的 → 网络与通知权限」没有任何状态提示**。现在显示 已授予 / 未授予，并在回到前台时重新读取；说明文字也讲清点按会跳系统设置。
+
+- **账号页输入路径**。每次按键会重建 4 个 `OutlinedTextField` 参数，编译后实测每次按键 3 次 lambda 包装分配。已把它们提进 `remember`，同样是编译后实测为 0 次。字段配色**不能**用 `remember` 缓存——Material3 1.3.0 的 `OutlinedTextFieldDefaults.colors()` 本身是 `@Composable`，而且 `TextFieldColors` 按字段比较，本来就不会因为重建而多重组。测试锁定了这一点。
+
+- **图标不再是第二套蓝色**。应用图标底色改为与应用主色一致（`#325FA4`），并去掉了前景层那块不透明满幅方块——它此前完全盖住了自适应图标声明的底色。
+
+**真实校园网络的一次观察**：模拟器的出口经宿主电脑，宿主已在校园网内，因此模拟器能打开真实的学校认证页。页面在旋转前后保持同一渲染进程。本次没有提交任何凭据，也没有点注销；页面显示的「已登录成功」是门户对宿主既有会话的反映，不是应用提交的结果。应用自身也没有因此报「在线」——它的在线状态仍然只由绑定目标 Wi-Fi 上的 HTTPS 204 探测决定。
+
+**未验证**：更新流程的下载与系统安装确认仍需在实体手机上确认；`fontScale`/`density`/`locale` 变化仍会结束登录页（按设计，会正常结算一次）；相机拍照识别路径仍未实拍。
+
 ## 0.4.0 检查
 
 2026-10-06 / 10-07，在同一 `gxnu_preview` 模拟器上检查 0.4.0（versionCode 7）：

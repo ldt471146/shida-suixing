@@ -28,16 +28,21 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import cn.gxnu.campus.BuildConfig
 import cn.gxnu.campus.core.ConnectionStatus
+import cn.gxnu.campus.network.WifiEnvironment
 import cn.gxnu.campus.ui.CampusActions
 import cn.gxnu.campus.ui.CampusUiState
 import cn.gxnu.campus.ui.ThemeMode
@@ -69,6 +74,7 @@ fun ProfileScreen(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalCampusPalette.current
+    val permissionsGranted = rememberCampusPermissionsGranted()
     var showTheme by remember { mutableStateOf(false) }
     var showHelp by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(false) }
@@ -137,8 +143,13 @@ fun ProfileScreen(
                 CampusRowDivider()
                 CampusRow(
                     title = "网络与通知权限",
-                    description = "识别校园 Wi-Fi，显示后台通知",
+                    description = permissionRowDescription(permissionsGranted),
                     leadingIcon = Icons.Outlined.Notifications,
+                    trailing = {
+                        val (ink, wash) = if (permissionsGranted) palette.success to palette.successWash
+                        else palette.warning to palette.warningWash
+                        CampusPill(permissionRowLabel(permissionsGranted), ink, wash)
+                    },
                     onClick = actions::requestPermissions
                 )
                 CampusRowDivider()
@@ -196,6 +207,37 @@ fun ProfileScreen(
         actions.deleteAccount()
         showDelete = false
     }
+}
+
+/**
+ * The permission grants are platform state the runtime does not mirror, so the row reads the same
+ * checks the activity requests: identifying 校园 Wi-Fi needs the location grants and the system
+ * location switch, the background service needs the notification grant. Re-reading on resume
+ * covers both the permission dialog result and the return from the app's system settings page.
+ */
+@Composable
+private fun rememberCampusPermissionsGranted(): Boolean {
+    val context = LocalContext.current
+    var resumeEpoch by remember { mutableIntStateOf(0) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { resumeEpoch++ }
+    return remember(resumeEpoch, context) {
+        WifiEnvironment.hasNetworkPermissions(context) &&
+            WifiEnvironment.isLocationEnabled(context) &&
+            WifiEnvironment.hasNotificationPermission(context)
+    }
+}
+
+/** The row reports one verdict for the pair it covers: both grants serve the same connection. */
+internal fun permissionRowLabel(granted: Boolean): String = if (granted) "已授予" else "未授予"
+
+/**
+ * Granted states what the permissions are for. Missing warns that tapping is not always a dialog:
+ * a grant that was permanently denied sends the user straight to the app's system settings page.
+ */
+internal fun permissionRowDescription(granted: Boolean): String = if (granted) {
+    "用于识别校园 Wi-Fi 与后台通知"
+} else {
+    "点按授权，被拒绝时会跳转系统设置"
 }
 
 @Composable

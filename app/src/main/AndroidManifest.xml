@@ -21,8 +21,24 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="false">
+        <!--
+            MainActivity owns the embedded school login page, which is a live WebView holding a
+            half-typed form, its captcha and its cookies. A recreated Activity cannot carry that
+            page across: the composition that owns the WebView is disposed with it, the page's
+            teardown wipes WebStorage, and the login attempt is lost. So this Activity handles the
+            configuration changes that would otherwise recreate it on a device the user is holding:
+            orientation and screenSize (both are required, or a rotation still restarts it),
+            smallestScreenSize and screenLayout (the same event for folds, split screen and display
+            changes), keyboardHidden and navigation (attaching an input device while typing),
+            uiMode (the app's SYSTEM theme mode; Compose updates the theme from the configuration
+            in place). density, fontScale and locale are deliberately NOT handled: Compose reads
+            density and font scale when the composition starts and this app lays its screens out
+            from LocalDensity.fontScale, so those need a fresh Activity, and the app ships a single
+            untranslated values/ resource set.
+        -->
         <activity
             android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|navigation|uiMode"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

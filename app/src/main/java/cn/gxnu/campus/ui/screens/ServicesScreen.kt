@@ -17,10 +17,12 @@ import cn.gxnu.campus.core.CampusRoute
 import cn.gxnu.campus.ui.CampusUiState
 import cn.gxnu.campus.ui.common.CampusCard
 import cn.gxnu.campus.ui.common.CampusPageHeader
+import cn.gxnu.campus.ui.common.CampusPill
 import cn.gxnu.campus.ui.common.CampusRow
 import cn.gxnu.campus.ui.common.CampusRowDivider
 import cn.gxnu.campus.ui.common.NetworkStatusPill
 import cn.gxnu.campus.ui.common.SectionLabel
+import cn.gxnu.campus.ui.common.connectionHeadline
 import cn.gxnu.campus.ui.theme.CampusSpace
 import cn.gxnu.campus.ui.theme.LocalCampusPalette
 
@@ -57,7 +59,17 @@ fun ServicesScreen(
                         leadingPlate = if (module.route == CampusRoute.CAMPUS_NETWORK) palette.accentWash else null,
                         // The campus-network status belongs to the campus-network row only.
                         trailing = if (module.route == CampusRoute.CAMPUS_NETWORK) {
-                            { NetworkStatusPill(state.status) }
+                            {
+                                // Until the runtime has read the saved settings there is no status to
+                                // report: state.status is still its NO_WIFI default, so a pill would
+                                // claim 未连接. 首页 answers the same state with the read-in-progress
+                                // headline, so this row borrows it instead of stating a verdict.
+                                if (state.initializing) {
+                                    CampusPill(connectionHeadline(state), palette.onAccentWash, palette.accentWash)
+                                } else {
+                                    NetworkStatusPill(state.status)
+                                }
+                            }
                         } else null,
                         onClick = {
                             when (module.route) {

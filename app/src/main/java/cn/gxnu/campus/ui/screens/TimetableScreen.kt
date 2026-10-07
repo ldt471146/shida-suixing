@@ -35,6 +35,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.selection.TextSelectionColors
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.ChevronRight
@@ -52,6 +54,7 @@ import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDefaults
@@ -64,11 +67,13 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -79,9 +84,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -90,6 +97,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -111,6 +119,7 @@ import cn.gxnu.campus.ui.common.CampusPageHeader
 import cn.gxnu.campus.ui.common.CampusPill
 import cn.gxnu.campus.ui.common.CampusPrimaryButton
 import cn.gxnu.campus.ui.common.SectionLabel
+import cn.gxnu.campus.ui.theme.CampusPalette
 import cn.gxnu.campus.ui.theme.CampusRadius
 import cn.gxnu.campus.ui.theme.CampusSpace
 import cn.gxnu.campus.ui.theme.LocalCampusPalette
@@ -129,6 +138,17 @@ private val GridHeaderHeight = 42.dp
 // stops a two-day week from stretching across the whole card.
 private val GridDayMinWidth = 68.dp
 private val GridDayMaxWidth = 112.dp
+// A cell is a fixed 66dp tall, so a name past ~1.3x would grow out of its row and overlap the next
+// one. Only the grid caps its own text scale; the rest of the screen keeps the system setting.
+private const val GridMaxFontScale = 1.3f
+// The preview keeps the photo's own shape and only caps its height, so a tall frame cannot push the
+// rest of the page away while a wide one is still shown whole.
+private val PreviewImageMaxHeight = 320.dp
+// Label columns are stated in sp rather than dp so they grow with the font scale instead of
+// ellipsising a real value ("11-12", "上课时间") once the user turns the text size up. Every row of a
+// list shares one width, so the column beside it stays aligned from row to row.
+private val TodayPeriodColumnWidth = 46.sp
+private val DetailLabelColumnWidth = 72.sp
 
 /**
  * 课表: pick or shoot a timetable photo, recognise it through the vision service, then read it back
@@ -339,7 +359,10 @@ fun TimetableScreen(
                 }) { Text("删除", color = palette.danger, style = MaterialTheme.typography.labelLarge) }
             },
             dismissButton = {
-                TextButton(onClick = { confirmingDelete = false }) {
+                TextButton(
+                    onClick = { confirmingDelete = false },
+                    colors = ButtonDefaults.textButtonColors(contentColor = palette.accent)
+                ) {
                     Text("取消", style = MaterialTheme.typography.labelLarge)
                 }
             }
@@ -365,7 +388,7 @@ fun TimetableScreen(
         CourseDetailSheet(
             course = course,
             week = state.selectedWeek,
-            tint = courseTint(LocalCampusPalette.current, course, timetable),
+            tint = tintFor(LocalCampusPalette.current, course, timetable),
             onDismiss = { detail = null }
         )
     }
@@ -496,7 +519,7 @@ private fun WeekChip(week: Int, selected: Boolean, current: Boolean, onClick: ()
         color = background,
         contentColor = ink,
         shape = CampusRadius.mdShape,
-        border = BorderStroke(1.dp, if (selected) palette.accentBorder else Color.Transparent),
+        border = if (selected) BorderStroke(1.dp, palette.accentBorder) else null,
         modifier = Modifier
             .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
             .semantics { contentDescription = description }
@@ -512,10 +535,11 @@ private fun WeekChip(week: Int, selected: Boolean, current: Boolean, onClick: ()
                 color = if (current && !selected) palette.onAccentWash else ink
             )
             // A same-height marker row keeps every chip aligned whether or not it is 当前周.
-            Box(
-                Modifier.size(4.dp)
-                    .background(if (current) palette.accent else Color.Transparent, CircleShape)
-            )
+            if (current) {
+                Box(Modifier.size(4.dp).background(palette.accent, CircleShape))
+            } else {
+                Spacer(Modifier.size(4.dp))
+            }
         }
     }
 }
@@ -579,7 +603,7 @@ private fun TodayCard(
                     courses.forEachIndexed { index, course ->
                         TodayCourseRow(
                             course = course,
-                            tint = tintAt(palette.isDark, slots[course] ?: 0),
+                            tint = tintAt(palette, slots[course] ?: 0),
                             onClick = { onCourse(course) }
                         )
                         if (index < courses.lastIndex) {
@@ -605,7 +629,8 @@ private fun TodayCourseRow(course: TimetableCourse, tint: CourseTint, onClick: (
         // The colour rule ties this row to the same course in the grid below.
         Box(Modifier.width(3.dp).height(36.dp).background(tint.rule, CampusRadius.pillShape))
         Spacer(Modifier.width(CampusSpace.md))
-        Column(Modifier.width(46.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+        val periodWidth = with(LocalDensity.current) { TodayPeriodColumnWidth.toDp() }
+        Column(Modifier.width(periodWidth), verticalArrangement = Arrangement.spacedBy(1.dp)) {
             Text(
                 periodRange(course),
                 style = MaterialTheme.typography.labelLarge,
@@ -688,42 +713,51 @@ private fun WeekGridCard(
                     // not stretch across the card.
                     val share = usable / dayCount
                     val dayWidth = if (dayCount >= 5) share else share.coerceIn(GridDayMinWidth, GridDayMaxWidth)
-                    Column(verticalArrangement = Arrangement.spacedBy(GridCellGap)) {
-                        Row(Modifier.horizontalScroll(horizontal)) {
-                            Spacer(Modifier.width(GridPeriodWidth))
-                            grid.days.forEach { day ->
-                                Spacer(Modifier.width(GridCellGap))
-                                DayHeader(
-                                    weekday = day.weekday,
-                                    isToday = showingCurrentWeek && day.weekday == todayWeekday,
-                                    width = dayWidth
-                                )
-                            }
-                        }
-                        Row(Modifier.horizontalScroll(horizontal)) {
-                            Column(Modifier.width(GridPeriodWidth), verticalArrangement = Arrangement.spacedBy(GridCellGap)) {
-                                grid.periods.forEach { period ->
-                                    Box(
-                                        Modifier.fillMaxWidth().height(GridCellHeight),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            "$period",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = palette.textTertiary
-                                        )
-                                    }
+                    val density = LocalDensity.current
+                    val gridDensity = remember(density) {
+                        if (density.fontScale > GridMaxFontScale) Density(density.density, GridMaxFontScale)
+                        else density
+                    }
+                    // The cap is scoped to the grid rows alone: the columns keep the real density, so
+                    // widths do not move, and only the text stops growing out of its fixed cell.
+                    CompositionLocalProvider(LocalDensity provides gridDensity) {
+                        Column(verticalArrangement = Arrangement.spacedBy(GridCellGap)) {
+                            Row(Modifier.horizontalScroll(horizontal)) {
+                                Spacer(Modifier.width(GridPeriodWidth))
+                                grid.days.forEach { day ->
+                                    Spacer(Modifier.width(GridCellGap))
+                                    DayHeader(
+                                        weekday = day.weekday,
+                                        isToday = showingCurrentWeek && day.weekday == todayWeekday,
+                                        width = dayWidth
+                                    )
                                 }
                             }
-                            grid.days.forEach { day ->
-                                Spacer(Modifier.width(GridCellGap))
-                                DayColumn(
-                                    day = day,
-                                    width = dayWidth,
-                                    isToday = showingCurrentWeek && day.weekday == todayWeekday,
-                                    slots = slots,
-                                    onCourse = onCourse
-                                )
+                            Row(Modifier.horizontalScroll(horizontal)) {
+                                Column(Modifier.width(GridPeriodWidth), verticalArrangement = Arrangement.spacedBy(GridCellGap)) {
+                                    grid.periods.forEach { period ->
+                                        Box(
+                                            Modifier.fillMaxWidth().height(GridCellHeight),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                "$period",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = palette.textTertiary
+                                            )
+                                        }
+                                    }
+                                }
+                                grid.days.forEach { day ->
+                                    Spacer(Modifier.width(GridCellGap))
+                                    DayColumn(
+                                        day = day,
+                                        width = dayWidth,
+                                        isToday = showingCurrentWeek && day.weekday == todayWeekday,
+                                        slots = slots,
+                                        onCourse = onCourse
+                                    )
+                                }
                             }
                         }
                     }
@@ -751,14 +785,16 @@ private fun DayHeader(weekday: Int, isToday: Boolean, width: Dp) {
                 TIMETABLE_WEEKDAYS[weekday - 1],
                 style = MaterialTheme.typography.labelMedium,
                 color = if (isToday) palette.onAccentWash else palette.textSecondary,
-                maxLines = 1
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             // The second line is always present so every header keeps the same height.
             Text(
                 if (isToday) "今天" else " ",
                 style = MaterialTheme.typography.labelSmall,
                 color = palette.onAccentWash,
-                maxLines = 1
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -778,7 +814,7 @@ private fun DayColumn(
             when (block) {
                 is TimetableBlock.Course -> CourseCell(
                     course = block.course,
-                    tint = tintAt(palette.isDark, slots[block.course] ?: 0),
+                    tint = tintAt(palette, slots[block.course] ?: 0),
                     onCourse = onCourse,
                     modifier = Modifier.fillMaxWidth().height(blockHeight(block.span))
                 )
@@ -859,13 +895,25 @@ private fun PreviewCard(preview: Bitmap?, preparing: Boolean, recognizing: Boole
                 }
             }
             preview?.let { bitmap ->
-                Image(
-                    bitmap = remember(bitmap) { bitmap.asImageBitmap() },
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxWidth().height(160.dp)
-                        .background(palette.muted, CampusRadius.mdShape)
-                )
+                val image = remember(bitmap) { bitmap.asImageBitmap() }
+                // A timetable photo is usually wider than tall, so cropping it into a 160dp strip
+                // hid the very thing this card exists to show: which image was actually sent. The
+                // box now takes the photo's own shape, capped so a tall frame cannot push the rest
+                // of the page down, and Fit keeps the whole frame visible either way.
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    val height = if (bitmap.width > 0 && bitmap.height > 0) {
+                        (maxWidth / (bitmap.width.toFloat() / bitmap.height)).coerceAtMost(PreviewImageMaxHeight)
+                    } else {
+                        PreviewImageMaxHeight
+                    }
+                    Image(
+                        bitmap = image,
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxWidth().height(height)
+                            .background(palette.muted, CampusRadius.mdShape)
+                    )
+                }
             }
             if (preparing || recognizing) {
                 Column(verticalArrangement = Arrangement.spacedBy(CampusSpace.sm)) {
@@ -996,7 +1044,12 @@ private fun ManageCard(
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = onDelete, enabled = !busy, modifier = Modifier.heightIn(min = 44.dp)) {
-                    Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(
+                        Icons.Outlined.Delete,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = palette.danger
+                    )
                     Spacer(Modifier.width(6.dp))
                     Text("删除课表", color = palette.danger, style = MaterialTheme.typography.labelLarge)
                 }
@@ -1052,10 +1105,30 @@ private fun ApiKeyCard(
                         Icon(
                             if (visible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
                             contentDescription = if (visible) "隐藏 API Key" else "显示 API Key",
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(18.dp),
+                            tint = palette.textSecondary
                         )
                     }
                 },
+                // The field is a stock Material component, so every colour it paints is named here
+                // rather than inherited: a key field is never the place to discover a dark-mode gap.
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = palette.textPrimary,
+                    unfocusedTextColor = palette.textPrimary,
+                    cursorColor = palette.accent,
+                    selectionColors = TextSelectionColors(
+                        handleColor = palette.accent,
+                        backgroundColor = palette.accent.copy(alpha = 0.30f)
+                    ),
+                    focusedBorderColor = palette.accent,
+                    unfocusedBorderColor = palette.borderStrong,
+                    focusedLabelColor = palette.onAccentWash,
+                    unfocusedLabelColor = palette.textSecondary,
+                    focusedPlaceholderColor = palette.textTertiary,
+                    unfocusedPlaceholderColor = palette.textTertiary,
+                    focusedTrailingIconColor = palette.textSecondary,
+                    unfocusedTrailingIconColor = palette.textTertiary
+                ),
                 modifier = Modifier.fillMaxWidth()
             )
             Row(horizontalArrangement = Arrangement.spacedBy(CampusSpace.sm)) {
@@ -1178,7 +1251,11 @@ private fun CourseDetailSheet(
         contentColor = palette.textPrimary
     ) {
         Column(
-            Modifier.fillMaxWidth().padding(start = CampusSpace.xl, end = CampusSpace.xl, bottom = CampusSpace.xxl),
+            // A landscape phone or a 2x font scale can make this sheet taller than the window, so
+            // the sheet scrolls instead of hiding its last detail row below the edge.
+            Modifier.fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(start = CampusSpace.xl, end = CampusSpace.xl, bottom = CampusSpace.xxl),
             verticalArrangement = Arrangement.spacedBy(CampusSpace.lg)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1217,12 +1294,13 @@ private fun CourseDetailSheet(
 @Composable
 private fun DetailRow(label: String, value: String) {
     val palette = LocalCampusPalette.current
+    val labelWidth = with(LocalDensity.current) { DetailLabelColumnWidth.toDp() }
     Row(Modifier.fillMaxWidth().padding(vertical = CampusSpace.sm), verticalAlignment = Alignment.Top) {
         Text(
             label,
             style = MaterialTheme.typography.bodySmall,
             color = palette.textTertiary,
-            modifier = Modifier.width(72.dp)
+            modifier = Modifier.width(labelWidth)
         )
         // Without this gap a four-character label runs straight into its value.
         Spacer(Modifier.width(CampusSpace.md))
@@ -1258,7 +1336,11 @@ private fun TermStartDialog(
                 onClick = {
                     pickerState.selectedDateMillis?.let { onConfirm(utcMillisToEpochDay(it)) }
                 },
-                enabled = pickerState.selectedDateMillis != null
+                enabled = pickerState.selectedDateMillis != null,
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = palette.accent,
+                    disabledContentColor = palette.textTertiary
+                )
             ) { Text("保存", style = MaterialTheme.typography.labelLarge) }
         },
         dismissButton = {
@@ -1268,7 +1350,10 @@ private fun TermStartDialog(
                         Text("清除", color = palette.danger, style = MaterialTheme.typography.labelLarge)
                     }
                 }
-                TextButton(onClick = onDismiss) { Text("取消", style = MaterialTheme.typography.labelLarge) }
+                TextButton(
+                    onClick = onDismiss,
+                    colors = ButtonDefaults.textButtonColors(contentColor = palette.accent)
+                ) { Text("取消", style = MaterialTheme.typography.labelLarge) }
             }
         }
     ) {
@@ -1296,11 +1381,22 @@ private fun TermStartDialog(
                 titleContentColor = palette.textPrimary,
                 headlineContentColor = palette.textSecondary,
                 weekdayContentColor = palette.textTertiary,
+                subheadContentColor = palette.textSecondary,
+                navigationContentColor = palette.textSecondary,
+                yearContentColor = palette.textPrimary,
+                currentYearContentColor = palette.onAccentWash,
+                selectedYearContentColor = palette.onAccent,
+                disabledYearContentColor = palette.textTertiary,
+                selectedYearContainerColor = palette.accent,
                 dayContentColor = palette.textPrimary,
-                selectedDayContainerColor = palette.accent,
+                disabledDayContentColor = palette.textTertiary,
                 selectedDayContentColor = palette.onAccent,
+                selectedDayContainerColor = palette.accent,
                 todayContentColor = palette.onAccentWash,
-                todayDateBorderColor = palette.accentBorder
+                todayDateBorderColor = palette.accentBorder,
+                dayInSelectionRangeContentColor = palette.onAccentWash,
+                dayInSelectionRangeContainerColor = palette.accentWash,
+                dividerColor = palette.border
             )
         )
     }
@@ -1373,40 +1469,44 @@ private class CourseTint(val fill: Color, val ink: Color, val rule: Color)
 private const val COURSE_TINT_COUNT = 6
 
 /**
- * Six muted washes that stay inside the app's single-accent language: the accent is still the only
- * saturated colour, and these only separate neighbouring courses. Hues are spread so two adjacent
- * cells never look alike, and each tint carries both a light and a dark form.
+ * Six course colours built only from palette tokens, so both themes stay on-language: four are the
+ * washes the palette already owns, and the other two mix neighbouring washes so adjacent cells still
+ * never look alike while the accent stays the only saturated colour. The ink is the hue softened
+ * toward the theme's own text colour — that is what stops six course tints from reading as six
+ * status colours — and the rule is the fill-to-ink midpoint, so no tint needs a third hex value.
  */
-private val LightCourseTints = listOf(
-    CourseTint(Color(0xFFE7ECF5), Color(0xFF2A4272), Color(0xFF9FB4D6)),
-    CourseTint(Color(0xFFE4F0EA), Color(0xFF27513C), Color(0xFF9CC4AE)),
-    CourseTint(Color(0xFFF6EEDD), Color(0xFF6B5320), Color(0xFFD9C08A)),
-    CourseTint(Color(0xFFF2E8F0), Color(0xFF5C3550), Color(0xFFC9A8C0)),
-    CourseTint(Color(0xFFF7EAE7), Color(0xFF7A3A2E), Color(0xFFD8AC9F)),
-    CourseTint(Color(0xFFE6EFEF), Color(0xFF2C4F52), Color(0xFFA2C4C6))
-)
-
-private val DarkCourseTints = listOf(
-    CourseTint(Color(0xFF243247), Color(0xFFBBD0EE), Color(0xFF4A6A9E)),
-    CourseTint(Color(0xFF1F3A31), Color(0xFFAEDCC6), Color(0xFF3E7059)),
-    CourseTint(Color(0xFF3A331E), Color(0xFFE8D3A0), Color(0xFF7A6535)),
-    CourseTint(Color(0xFF382839), Color(0xFFDBBED6), Color(0xFF6E4E68)),
-    CourseTint(Color(0xFF3B2823), Color(0xFFE8BFB2), Color(0xFF7A4E42)),
-    CourseTint(Color(0xFF21383A), Color(0xFFB4D6D8), Color(0xFF456E71))
-)
-
-private fun tintAt(dark: Boolean, slot: Int): CourseTint {
-    val ladder = if (dark) DarkCourseTints else LightCourseTints
-    return ladder[((slot % ladder.size) + ladder.size) % ladder.size]
+private fun tintAt(palette: CampusPalette, slot: Int): CourseTint {
+    val index = ((slot % COURSE_TINT_COUNT) + COURSE_TINT_COUNT) % COURSE_TINT_COUNT
+    return when (index) {
+        0 -> courseTint(palette, palette.accentWash, palette.onAccentWash)
+        1 -> courseTint(palette, palette.successWash, palette.success)
+        2 -> courseTint(palette, palette.warningWash, palette.warning)
+        3 -> courseTint(
+            palette,
+            lerp(palette.accentWash, palette.dangerWash, 0.5f),
+            lerp(palette.onAccentWash, palette.danger, 0.5f)
+        )
+        4 -> courseTint(palette, palette.dangerWash, palette.danger)
+        else -> courseTint(
+            palette,
+            lerp(palette.successWash, palette.accentWash, 0.5f),
+            lerp(palette.success, palette.onAccentWash, 0.5f)
+        )
+    }
 }
 
-private fun courseTint(
-    palette: cn.gxnu.campus.ui.theme.CampusPalette,
+private fun courseTint(palette: CampusPalette, fill: Color, hue: Color): CourseTint {
+    val ink = lerp(hue, palette.textPrimary, 0.35f)
+    return CourseTint(fill, ink, lerp(fill, ink, 0.45f))
+}
+
+private fun tintFor(
+    palette: CampusPalette,
     course: TimetableCourse,
     timetable: Timetable?
 ): CourseTint {
     val slots = timetable?.let { TimetableCourseSlots.assign(it.courses, COURSE_TINT_COUNT) }
-    return tintAt(palette.isDark, slots?.get(course) ?: 0)
+    return tintAt(palette, slots?.get(course) ?: 0)
 }
 
 private fun periodRange(course: TimetableCourse): String =

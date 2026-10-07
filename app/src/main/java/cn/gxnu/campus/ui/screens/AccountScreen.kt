@@ -100,8 +100,9 @@ fun AccountScreen(
     val accountKeyboardActions = remember(passwordFocus) {
         KeyboardActions(onNext = { passwordFocus.requestFocus() })
     }
-    // Built here, not per keystroke: the fields recompose on every character, and Material3's
-    // colors() builds a fresh TextFieldColors on each call.
+    // Built here, not per keystroke. Material3's colors() is itself @Composable (it reads the
+    // selection colours), so it cannot be memoised in a plain remember; it is rebuilt only when
+    // this scope recomposes, and TextFieldColors compares by value, so the fields still skip.
     val fieldColors = accountFieldColors()
 
     fun save() {
@@ -291,20 +292,24 @@ private fun AccountInputField(
             imeAction = if (passwordField) ImeAction.Done else ImeAction.Next
         )
     }
-    OutlinedTextField(
-        value = text.value,
-        onValueChange = {
-            text.value = it
+    // Every argument below is remembered: this scope restarts on each character, so an argument
+    // built here would be a new instance per keystroke and would keep the placeholder,
+    // supporting-text and trailing-icon slots from comparing equal to their previous values.
+    val onValueChange = remember(text, onEdited) {
+        { newValue: String ->
+            text.value = newValue
             onEdited()
-        },
-        enabled = enabled,
-        textStyle = MaterialTheme.typography.bodyMedium,
-        placeholder = { Text(placeholder, style = MaterialTheme.typography.bodyMedium) },
-        isError = isError,
-        singleLine = true,
-        supportingText = if (isError) ({ Text(if (passwordField) "请填写密码" else "请填写校园账号") }) else null,
-        visualTransformation = if (passwordField && !passwordVisible) passwordTransformation else VisualTransformation.None,
-        trailingIcon = if (passwordField) ({
+        }
+    }
+    val placeholderContent: @Composable () -> Unit = remember(placeholder) {
+        { Text(placeholder, style = MaterialTheme.typography.bodyMedium) }
+    }
+    val errorContent: (@Composable () -> Unit)? = remember(isError) {
+        if (isError) ({ Text(if (passwordField) "请填写密码" else "请填写校园账号") }) else null
+    }
+    // Reads the visibility state at invocation, so the toggle keeps working on the remembered lambda.
+    val visibilityToggle: (@Composable () -> Unit)? = remember(enabled) {
+        if (passwordField) ({
             IconButton(onClick = { passwordVisible = !passwordVisible }, enabled = enabled, modifier = Modifier.size(48.dp)) {
                 Icon(
                     if (passwordVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
@@ -313,7 +318,19 @@ private fun AccountInputField(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-        }) else null,
+        }) else null
+    }
+    OutlinedTextField(
+        value = text.value,
+        onValueChange = onValueChange,
+        enabled = enabled,
+        textStyle = MaterialTheme.typography.bodyMedium,
+        placeholder = placeholderContent,
+        isError = isError,
+        singleLine = true,
+        supportingText = errorContent,
+        visualTransformation = if (passwordField && !passwordVisible) passwordTransformation else VisualTransformation.None,
+        trailingIcon = visibilityToggle,
         keyboardOptions = keyboardOptions,
         keyboardActions = keyboardActions,
         shape = MaterialTheme.shapes.medium,

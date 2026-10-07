@@ -6,8 +6,10 @@ import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.snapshots.SnapshotStateObserver
 import androidx.compose.runtime.structuralEqualityPolicy
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 /**
  * Guards the invalidation scope of a keystroke in the account form.
@@ -22,6 +24,13 @@ import org.junit.Test
  * `Composition`/`ControlledComposition` with `Recomposer`-style driving, and both paths invalidate
  * the same scopes for every case below (composer needs an Android runtime, hence the observer
  * based check here).
+ *
+ * The second half of the guard is structural: `AccountInputField` re-runs on every character, so
+ * nothing it hands to `OutlinedTextField` may be built in its own body — neither the colours
+ * (Material3's `colors()` allocates a fresh `TextFieldColors` per call) nor the text-field lambdas
+ * (a fresh instance per composition defeats the argument's ability to compare equal). A JVM unit
+ * test cannot compose the field, so those two arguments are asserted against the source, which is
+ * what lets this file fail when the hoisting is removed.
  */
 class AccountFormTypingRecompositionTest {
 
@@ -65,15 +74,22 @@ class AccountFormTypingRecompositionTest {
 
     private class AccountForm {
         val account = mutableStateOf("")
+        val password = mutableStateOf("")
         val submitted = mutableStateOf(false)
         val saveError = mutableStateOf<String?>(null)
         val accountError = derivedStateOf(structuralEqualityPolicy()) { submitted.value && account.value.isBlank() }
-        val passwordError = derivedStateOf(structuralEqualityPolicy()) { submitted.value && account.value.isEmpty() }
+        val passwordError = derivedStateOf(structuralEqualityPolicy()) { submitted.value && password.value.isEmpty() }
     }
 
     /** Typing a character, exactly like AccountInputField's onValueChange does. */
     private fun type(form: AccountForm, text: String) {
         form.account.value = text
+        form.saveError.value = null
+    }
+
+    /** Typing in the password field, whose onValueChange has the same shape. */
+    private fun typePassword(form: AccountForm, text: String) {
+        form.password.value = text
         form.saveError.value = null
     }
 
@@ -87,8 +103,11 @@ class AccountFormTypingRecompositionTest {
             observed = form.saveError.value
         }
         // AccountInputField: the field scope reads the text state it renders.
-        recorder.scope("field") {
+        recorder.scope("account field") {
             observed = form.account.value
+        }
+        recorder.scope("password field") {
+            observed = form.password.value
         }
         recorder.start()
         try {
@@ -97,7 +116,33 @@ class AccountFormTypingRecompositionTest {
             recorder.stop()
         }
         assertEquals("the form must not be invalidated while typing", 0, recorder.invalidations["form"])
-        assertEquals("the field is the only scope a keystroke invalidates", 10, recorder.invalidations["field"])
+        assertEquals("the field is the only scope a keystroke invalidates", 10, recorder.invalidations["account field"])
+        assertEquals("typing an account must not touch the password field", 0, recorder.invalidations["password field"])
+    }
+
+    @Test
+    fun aPasswordKeystrokeInvalidatesOnlyThePasswordFieldScope() {
+        val form = AccountForm()
+        val recorder = ScopeRecorder()
+        recorder.scope("form") {
+            observed = form.accountError.value to form.passwordError.value
+            observed = form.saveError.value
+        }
+        recorder.scope("account field") {
+            observed = form.account.value
+        }
+        recorder.scope("password field") {
+            observed = form.password.value
+        }
+        recorder.start()
+        try {
+            repeat(10) { index -> recorder.change { typePassword(form, "pw$index") } }
+        } finally {
+            recorder.stop()
+        }
+        assertEquals("the form must not be invalidated while typing", 0, recorder.invalidations["form"])
+        assertEquals("the field is the only scope a keystroke invalidates", 10, recorder.invalidations["password field"])
+        assertEquals("typing a password must not touch the account field", 0, recorder.invalidations["account field"])
     }
 
     @Test
@@ -154,6 +199,85 @@ class AccountFormTypingRecompositionTest {
             "AccountInputField must receive its TextFieldColors from the screen scope",
             field.parameterTypes.any { type -> type.name == "androidx.compose.material3.TextFieldColors" }
         )
+    }
+
+    /**
+     * The compiler half of the colour argument: `TextFieldColors` compares by value, so even a
+     * rebuilt instance is not a change as far as the field's arguments are concerned. If Material3
+     * ever drops that, the colours have to be hoisted into a `remember`, not merely out of the field.
+     */
+    @Test
+    fun theFieldColoursCompareByValue() {
+        val colors = Class.forName("androidx.compose.material3.TextFieldColors")
+        assertTrue(
+            "TextFieldColors must compare by value, or a rebuilt instance invalidates the field's arguments",
+            colors.declaredMethods.any { method -> method.name == "equals" && method.parameterCount == 1 }
+        )
+    }
+
+    /**
+     * The colours are built in exactly one place: the declaration of `accountFieldColors` plus the
+     * single call in the screen scope. A second call would mean a field is building its own.
+     */
+    @Test
+    fun theFieldColoursAreBuiltOnlyOnceOutsideTheField() {
+        assertEquals(
+            "the field colours must be built in exactly one call site, outside AccountInputField",
+            2, Regex("accountFieldColors\\(").findAll(accountScreenSource()).count()
+        )
+    }
+
+    /**
+     * Every lambda handed to `OutlinedTextField` must be a value held across recompositions, not a
+     * literal rebuilt inside `AccountInputField`'s restart scope. This is the source-level half of
+     * the guard: a JVM test cannot compose the field to observe the lambda identity directly.
+     */
+    @Test
+    fun theFieldArgumentsAreRememberedInsteadOfRebuiltPerKeystroke() {
+        val body = functionBody("AccountInputField")
+        assertFalse(
+            "AccountInputField must not build the field colours in its own restart scope",
+            body.contains("accountFieldColors(") || body.contains("OutlinedTextFieldDefaults.colors(")
+        )
+        assertTrue("AccountInputField must still render an OutlinedTextField", body.contains("OutlinedTextField("))
+        // Only the arguments of the call itself: the remembers above it declare the same names.
+        val call = body.substringAfter("OutlinedTextField(")
+        for (argument in listOf("onValueChange", "placeholder", "supportingText", "trailingIcon")) {
+            val value = argumentValue(call, argument)
+            assertTrue(
+                "$argument must be handed over as a remembered value, not built inline, was: $value",
+                Regex("[A-Za-z_][A-Za-z0-9_]*").matches(value)
+            )
+        }
+    }
+
+    /** The right-hand side of `name = ...` inside the call, up to the end of the argument. */
+    private fun argumentValue(call: String, name: String): String {
+        val match = Regex("\\b$name\\s*=\\s*([^\\n,]+)").find(call)
+            ?: throw AssertionError("AccountInputField passes no $name to OutlinedTextField")
+        return match.groupValues[1].trim()
+    }
+
+    /** The text of one top-level function: its declaration to the closing brace in column 0. */
+    private fun functionBody(name: String): String {
+        val source = accountScreenSource()
+        val declaration = Regex("fun\\s+$name\\s*\\(").find(source)
+            ?: throw AssertionError("AccountScreen.kt has no function $name")
+        val end = source.indexOf("\n}", declaration.range.first)
+        return source.substring(declaration.range.first, if (end < 0) source.length else end)
+    }
+
+    /**
+     * The guard reads [accountScreenSource], resolved from the test working directory (`app/` under
+     * Gradle) or from the repository root, so it works from both entry points.
+     */
+    private fun accountScreenSource(): String {
+        val relative = "src/main/java/cn/gxnu/campus/ui/screens/AccountScreen.kt"
+        val candidates = generateSequence(File("").absoluteFile) { it.parentFile }
+            .take(4)
+            .flatMap { root -> sequenceOf(File(root, relative), File(root, "app/$relative")) }
+        return candidates.firstOrNull { it.isFile }?.readText()
+            ?: throw AssertionError("AccountScreen.kt not found above ${File("").absolutePath}")
     }
 
     private var observed: Any? = null

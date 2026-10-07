@@ -26,8 +26,8 @@ android {
         applicationId = "cn.gxnu.campus"
         minSdk = 26
         targetSdk = 34
-        versionCode = 7
-        versionName = "0.4.0"
+        versionCode = 8
+        versionName = "0.4.1"
 
         // Recognition endpoint compiled into the build so the shipped app needs no key entry.
         // Blank values drop the app back to the manual API-key screen.
