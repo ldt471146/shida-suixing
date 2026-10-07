@@ -80,9 +80,18 @@ class UpdateController private constructor(
     private var awaitingInstallPermission = false
 
     /**
-     * The only automatic check, run once per app start. GitHub's unauthenticated allowance is 60
-     * requests per hour per address, so a launch check that also survived activity recreation would
-     * be spending the allowance for nothing.
+     * The version whose transfer the user stopped with 取消. The download otherwise starts on its
+     * own the moment a version is found, so without this the cancel button would restart itself and
+     * be a lie. Process-scoped on purpose: 取消 means "not now", while ✕ (暂不提示) is the
+     * persisted "never offer this version again".
+     */
+    private var autoDownloadStoppedFor: Int? = null
+
+    /**
+     * The only automatic check, run once per app start. It also starts the download, so the app is
+     * already holding the installer by the time the user taps 安装. GitHub's unauthenticated
+     * allowance is 60 requests per hour per address, so a launch check that also survived activity
+     * recreation would be spending the allowance for nothing.
      */
     fun checkOnLaunch() {
         if (checkedOnLaunch) return
@@ -90,7 +99,14 @@ class UpdateController private constructor(
         check(manual = false)
     }
 
-    override fun checkForUpdate() = check(manual = true)
+    /**
+     * A manual check is an explicit request, so it clears an earlier 取消: asking again means the
+     * user wants the download, and the card is not the only way back to it.
+     */
+    override fun checkForUpdate() {
+        autoDownloadStoppedFor = null
+        check(manual = true)
+    }
 
     private fun check(manual: Boolean) {
         if (checkJob?.isActive == true) return
@@ -112,13 +128,28 @@ class UpdateController private constructor(
         if (result is ReleaseCheck.Available) {
             offered = result
             val dismissed = !manual && preferences.dismissedVersionCode == result.version.versionCode
+            if (dismissed) {
+                mutable.update { it.copy(phase = UpdatePhase.Hidden) }
+                return
+            }
             mutable.update {
-                it.copy(
-                    phase = if (dismissed) UpdatePhase.Hidden
-                    else UpdatePhase.Available(result.version.versionName, result.apkBytes)
-                )
+                it.copy(phase = UpdatePhase.Available(result.version.versionName, result.apkBytes))
             }
             if (manual) publish("发现新版本 ${result.version.versionName}。")
+            val cached = cachedApkFor(result)
+            if (cached != null) {
+                // A completed download from an earlier session: the file only carries the .apk name
+                // once its body was verified, so going straight to 就绪 saves re-pulling 11 MB on
+                // every app start.
+                downloaded = cached
+                mutable.update {
+                    it.copy(phase = UpdatePhase.Ready(result.version.versionName, !canRequestPackageInstalls()))
+                }
+                return
+            }
+            if (autoDownloadStoppedFor != result.version.versionCode) {
+                downloadUpdate()
+            }
             return
         }
         val summary = result.summary()
@@ -134,7 +165,7 @@ class UpdateController private constructor(
     override fun downloadUpdate() {
         val target = offered ?: return
         if (downloadJob?.isActive == true) return
-        val file = File(updateDir, "shida-suixing-${target.version.versionName}.apk")
+        val file = apkFileFor(target.version.versionName)
         // One transfer at a time: a stale apk from an earlier version would only waste cache.
         updateDir.listFiles()?.forEach { if (it != file) it.delete() }
         mutable.update { it.copy(phase = UpdatePhase.Downloading(target.version.versionName, 0L, target.apkBytes)) }
@@ -167,6 +198,9 @@ class UpdateController private constructor(
     }
 
     override fun cancelDownload() {
+        // Remembered before the phase is rewritten, or the auto-start would treat the next check as
+        // a fresh offer and pull the same bytes straight back down.
+        autoDownloadStoppedFor = offered?.version?.versionCode
         downloadJob?.cancel()
         downloadJob = null
         // Cancelling the coroutine alone would leave the socket read waiting for its timeout.
@@ -181,6 +215,14 @@ class UpdateController private constructor(
     override fun dismissUpdate() {
         val target = offered ?: return
         preferences.dismissedVersionCode = target.version.versionCode
+        // Dismissing also stops a transfer that is already running; leaving it going would download
+        // 11 MB for a card the user just hid.
+        if (downloadJob?.isActive == true) {
+            autoDownloadStoppedFor = target.version.versionCode
+            downloadJob?.cancel()
+            downloadJob = null
+            updater.abort()
+        }
         mutable.update { it.copy(phase = UpdatePhase.Hidden) }
     }
 
@@ -254,6 +296,20 @@ class UpdateController private constructor(
     }
 
     private fun canRequestPackageInstalls(): Boolean = application.packageManager.canRequestPackageInstalls()
+
+    /**
+     * A previously completed download for this release, if the cache still holds one. The declared
+     * size from the release payload is checked when it is known, so a truncated or replaced file is
+     * downloaded again rather than handed to the installer.
+     */
+    private fun cachedApkFor(release: ReleaseCheck.Available): File? {
+        val file = apkFileFor(release.version.versionName)
+        if (!file.isFile || file.length() <= 0L) return null
+        if (release.apkBytes > 0L && file.length() != release.apkBytes) return null
+        return file
+    }
+
+    private fun apkFileFor(versionName: String) = File(updateDir, "shida-suixing-$versionName.apk")
 
     private fun publish(message: String) {
         mutable.update { it.copy(message = message, messageId = it.messageId + 1) }

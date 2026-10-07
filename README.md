@@ -29,9 +29,11 @@ APK 输出：`app/build/outputs/apk/release/app-release.apk`，本轮版本 0.4.
 
 ## 更新与分发
 
-应用启动时检查 GitHub Releases，发现新版本后在首页和「我的」显示更新卡片，一键下载并在系统确认后安装。「我的 → 检查更新」可随时手动检查。自动检查每个进程只跑一次，请求量在未认证限额内。
+应用启动时检查 GitHub Releases：发现新版本后**自动下载**，下载完在首页和「我的」显示「新版本已就绪」，点一次「安装」后由系统确认即完成。用户需要做的只剩系统那一次确认——Android 不允许应用静默安装自己，这一步无法省略。
 
-Android 不允许应用静默安装自己，所以流程止于「下载完成后由系统弹出安装确认」，这一步无法省略。
+不想现在更新可以点「取消」停掉本次下载；点「✕ 暂不提示」则这个版本不再显示、也不会自动下载。「我的 → 检查更新」可随时手动检查，手动检查会清除之前的取消记录。
+
+自动检查每个进程只跑一次，请求量在未认证限额内。
 
 发布新版本：
 
@@ -42,7 +44,7 @@ git push origin v0.4.1
 
 推送 `v*` 标签后 [发布工作流](.github/workflows/android-release.yml) 在 runner 上构建签名 APK，并发布 `shida-suixing-<版本>.apk` 与 `version.json`。应用读取 `version.json` 的 `versionCode` 判断是否需要更新。
 
-当前已发布：`v0.4.0`（versionCode 7）、`v0.4.1`（versionCode 8，当前最新）。
+当前已发布：`v0.4.0`（versionCode 7）、`v0.4.1`（versionCode 8）、`v0.4.2`（versionCode 9，当前最新）。
 
 签名密钥在仓库之外（`D:\gxsf-signing\release.jks`），通过仓库 Secrets 提供给 CI，不进入版本库。**请另行备份该密钥和口令**：丢失后已安装的旧版本无法再被覆盖更新。
 
