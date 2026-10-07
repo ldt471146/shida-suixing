@@ -1,5 +1,6 @@
 package cn.gxnu.campus.network
 
+import cn.gxnu.campus.core.CampusNetworkPolicy
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -134,9 +135,9 @@ class WifiEnvironment(context: Context, private val scope: CoroutineScope) {
     fun openConnection(snapshot: NetworkSnapshot, url: URL): HttpsURLConnection {
         val entry = networks.entryFor(snapshot)
         // Bound by identity, not by name: the network we are authenticating on is the one the caller
-        // handed us, and requiring the SSID to read "GXNU-YC" would break every renamed campus Wi-Fi
-        // and every device that cannot read names at all.
-        if (!hasNetworkPermissions(context) || !isLocationEnabled(context) || entry == null) {
+        // handed us. Whether it may carry an authentication at all is CampusNetworkPolicy's call.
+        if (!hasNetworkPermissions(context) || !isLocationEnabled(context) ||
+            entry == null || !CampusNetworkPolicy.allows(snapshot)) {
             throw TargetNetworkUnavailableException()
         }
         // Never use URL.openConnection or bindProcessToNetwork: mobile data cannot satisfy this request.

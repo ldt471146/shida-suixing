@@ -1,5 +1,6 @@
 package cn.gxnu.campus.network
 
+import cn.gxnu.campus.core.CampusNetworkPolicy
 import android.annotation.SuppressLint
 import android.content.Context
 import android.net.http.SslError
@@ -45,7 +46,7 @@ class OfficialPortalTransport(context: Context, private val wifi: WifiEnvironmen
 
     @SuppressLint("SetJavaScriptEnabled")
     override suspend fun authenticate(network: NetworkSnapshot, credentials: Credentials, provider: Provider): Boolean {
-        if (!network.isWifi) throw PortalException(PortalFailure.UNREACHABLE, "请先连接校园 Wi-Fi。")
+        CampusNetworkPolicy.refusal(network)?.let { throw PortalException(PortalFailure.UNREACHABLE, it) }
         val resources = PinnedPortalResources(network, TargetConnectionFactory { snapshot, url -> wifi.openConnection(snapshot, url) })
         val pageFailure = AtomicReference<PortalFailure?>(null)
         var view: WebView? = null

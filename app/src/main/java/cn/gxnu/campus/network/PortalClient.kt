@@ -1,5 +1,6 @@
 package cn.gxnu.campus.network
 
+import cn.gxnu.campus.core.CampusNetworkPolicy
 import cn.gxnu.campus.core.ConnectionTransport
 import cn.gxnu.campus.core.Credentials
 import cn.gxnu.campus.core.NetworkSnapshot
@@ -195,7 +196,7 @@ class PortalClient internal constructor(private val connections: TargetConnectio
     }
 
     private fun requireCampus(network: NetworkSnapshot) {
-        if (!network.isWifi) throw PortalException(PortalFailure.UNREACHABLE, "请先连接校园 Wi-Fi。")
+        CampusNetworkPolicy.refusal(network)?.let { throw PortalException(PortalFailure.UNREACHABLE, it) }
     }
 
     private data class HttpReply(val status: Int, val location: String?, val body: ByteArray) {

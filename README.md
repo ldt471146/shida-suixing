@@ -25,7 +25,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\preview-android.ps
 
 预览脚本检测指定设备，自动启动模拟器窗口并用 `adb install -r` 更新，保存的设置随更新保留。可用 `-State ONLINE`、`AUTH_ERROR`、`NO_WIFI` 等查看不同界面。`-Preview` 仅在 Debug APK 生效，使用独立内存控制器，不初始化凭据存储或校园认证模块；界面始终显示预览标识。
 
-APK 输出：`app/build/outputs/apk/release/app-release.apk`，本轮版本 0.8.1 / versionCode 17，可覆盖安装。正式分发走 GitHub Releases，见下节。
+APK 输出：`app/build/outputs/apk/release/app-release.apk`，本轮版本 0.8.2 / versionCode 18，可覆盖安装。正式分发走 GitHub Releases，见下节。
 
 ## 更新与分发
 
@@ -44,7 +44,7 @@ git push origin v0.6.0
 
 推送 `v*` 标签后 [发布工作流](.github/workflows/android-release.yml) 在 runner 上构建签名 APK，并发布 `shida-suixing-<版本>.apk` 与 `version.json`。应用读取 `version.json` 的 `versionCode` 判断是否需要更新。
 
-当前已发布：`v0.4.0`（versionCode 7）、`v0.4.1`（8）、`v0.4.2`（9）、`v0.5.0`（10）、`v0.6.0`（12）、`v0.6.1`（13）、`v0.7.0`（14）、`v0.7.1`（15）。`0.8.0`（16）、`0.8.1`（17）为当前版本。
+当前已发布：`v0.4.0`（versionCode 7）、`v0.4.1`（8）、`v0.4.2`（9）、`v0.5.0`（10）、`v0.6.0`（12）、`v0.6.1`（13）、`v0.7.0`（14）、`v0.7.1`（15）。`0.8.0`（16）、`0.8.1`（17）、`0.8.2`（18）为当前版本。
 
 签名密钥在仓库之外（`D:\gxsf-signing\release.jks`），通过仓库 Secrets 提供给 CI，不进入版本库。**请另行备份该密钥和口令**：丢失后已安装的旧版本无法再被覆盖更新。
 
@@ -90,7 +90,7 @@ powershell -NoProfile -File .\scripts\check-android.ps1 -Task lintDebug
 powershell -NoProfile -File .\scripts\check-android.ps1 -Task assembleRelease
 ```
 
-当前 308 个单元测试通过，`lintDebug` 无错误。发布构建需要 `local.properties` 里的 `signing.*`；缺失时回退到 debug 签名，产物不可分发。CI 的签名材料来自仓库 Secrets。
+当前 322 个单元测试通过，`lintDebug` 无错误。发布构建需要 `local.properties` 里的 `signing.*`；缺失时回退到 debug 签名，产物不可分发。CI 的签名材料来自仓库 Secrets。
 
 协议和协调器测试使用虚构数据，覆盖运营商、编码、JSONP 数据解析、重复操作、换网与账号变更、失败状态。账号密码不进入日志或源码，界面不拼接带凭据的 URL。官方适配器通过 `Network.openConnection` 绑定目标 Wi-Fi，保留系统 TLS 证书校验。
 
@@ -145,5 +145,15 @@ powershell -NoProfile -File .\scripts\check-android.ps1 -Task assembleRelease
 `ConnectionCoordinatorTest` / `EmbeddedPortalAvailabilityTest` / `PortalClientTest` / `VisiblePortalTargetTest` 里钉住旧规则的 4 条断言已按新规则重写，并各自写清了为什么：**名字读得出但不是校园网 → 拒绝**；**名字读不出 → 放行去认证**。
 
 308 tests / 0 failures。真机上是否恢复仍需要用户实测（模拟器连不上 `GXNU-YC`）。
+
+0.8.2 是解耦，**没有行为改动**。三处：
+
+**一、校园网身份判定收进一处。** 0.8.1 修「连上校园网却显示未连接」时，同一条规则（`ssid == "GXNU-YC"`）散在七个文件里，改一次要动六处 —— 那就是耦合的代价。现在只有一个 `CampusNetworkPolicy`，规则也只有三条：不是 Wi-Fi → 没有可认证的链路；名字读得出来但不是校园网 → 拒绝（这时名字是证据）；**其余（含名字读不出来）→ 放行去问认证页**。`ConnectionCoordinator`、`WifiEnvironment`、`PortalClient`、`OfficialPortalTransport`、`PinnedPortalResources`、`CampusApplication` 全部改为调用它，各处的文案也从同一处取。
+
+**二、`CampusRuntime` 的界面推导抽成纯函数。** `render()` 原本是那个上帝对象的私有方法 —— 「界面显示什么」既没法单测（要构造整个运行时），又和「协调连接」挤在一个类里。现在是 `campusUiState(CampusRenderInputs)`，输入全部显式列出（隐藏输入正是这类映射最容易出错的地方）。这一层第一次有了测试：手动连接阶段压过协调器状态、计时归属哪一次尝试、账号打码不许带完整学号、两个「忙」来源、以及初始化时说清是在恢复账号。8 条新用例。
+
+**三、`TimetableScreen.kt` 从 1939 行拆成 8 个文件**（同包，纯搬移）：入口与接线 254 行、网格与列宽数学 457、卡片 473、课程编辑面板 424、登录卡 180、对话框 144、课程详情 127、配色与格式化 78。唯一的结构改动是把内联的删除确认框提取成 `DeleteTimetableDialog`（文案、颜色、赋值顺序逐字保留）。拆分做过机械等价性校验：原文件每一行代码除那处提取外都在新文件里逐字存在。
+
+**`CampusRuntime` 本身还没拆** —— 它仍是 26KB、十几个可变字段、零覆盖。那是真正该拆的下一个，但要先给它补上行为测试再动，否则就是盲改一个正在被用户使用的协调器。这条留作下一步。
 
 新版实际画面及操作记录：[模拟器检查](docs/design/emulator-verification.md)、[当前浅色首页](docs/design/screenshots/v5-home-light.png)。更新链路的实现与边界见[应用内更新](docs/design/app-update.md)。真实校园网登录与手机后台重连尚未完成实测，预览结果仅用于界面检查。更新流程的下载与系统安装确认需在实体手机验证。

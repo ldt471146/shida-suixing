@@ -1,5 +1,6 @@
 package cn.gxnu.campus
 
+import cn.gxnu.campus.core.CampusNetworkPolicy
 import android.app.Application
 import android.content.Intent
 import androidx.core.content.ContextCompat
@@ -27,6 +28,8 @@ import cn.gxnu.campus.runtime.RuntimeStorageQueue
 import cn.gxnu.campus.service.AutoConnectService
 import cn.gxnu.campus.ui.CampusActions
 import cn.gxnu.campus.ui.CampusEvent
+import cn.gxnu.campus.ui.CampusRenderInputs
+import cn.gxnu.campus.ui.campusUiState
 import cn.gxnu.campus.ui.CampusUiState
 import cn.gxnu.campus.ui.ThemeMode
 import kotlinx.coroutines.CoroutineScope
@@ -525,51 +528,29 @@ class CampusRuntime(private val application: Application) : CampusActions {
     }
 
     private fun render() {
-        val connection = coordinator.state.value
         val credentialState = session.state.value
-        val status = when (manualIntent.stage) {
-            ManualIntentStage.PREPARING -> ConnectionStatus.PREPARING
-            ManualIntentStage.WAITING_PERMISSION -> ConnectionStatus.NEED_PERMISSION
-            ManualIntentStage.FAILED -> ConnectionStatus.UNREACHABLE
-            ManualIntentStage.NONE -> connection.status
-        }
-        val message = when (manualIntent.stage) {
-            ManualIntentStage.PREPARING -> if (initializing) "正在恢复账号并识别校园 Wi-Fi…" else "正在识别当前 Wi-Fi 并准备连接…"
-            ManualIntentStage.WAITING_PERMISSION -> permissionMessage()
-            ManualIntentStage.FAILED -> "校园 Wi-Fi 识别失败，请确认网络后重试。"
-            ManualIntentStage.NONE -> connectionMessage()
-        }
-        mutableUiState.value = CampusUiState(
-            status = status,
-            failure = when (manualIntent.stage) {
-                ManualIntentStage.NONE -> connection.failure
-                ManualIntentStage.FAILED -> PortalFailure.UNREACHABLE
-                else -> null
-            },
-            attemptId = connection.attemptId,
-            connectionStartedAtMillis = if (manualIntent.stage in setOf(ManualIntentStage.PREPARING, ManualIntentStage.FAILED)) preparingStartedAt
-                else connection.connectionStartedAtMillis,
-            message = message,
-            wifiName = wifi.state.value.network?.ssid ?: "未连接 Wi-Fi",
-            accountConfigured = credentialState.credentials != null,
-            maskedAccount = maskAccount(credentialState.credentials?.account),
-            accountSaved = credentialState.remembered,
-            selectedProvider = selectedProvider,
-            autoConnect = wantsAuto,
-            autoRunning = foregroundRunning,
-            theme = theme,
-            feedback = feedback.message,
-            feedbackId = feedback.id,
-            initializing = initializing,
-            accountSaving = accountChanges > 0 || credentialState.changing,
-            diagnosticLines = diagnostics.lines
+        mutableUiState.value = campusUiState(
+            CampusRenderInputs(
+                connection = coordinator.state.value,
+                manualStage = manualIntent.stage,
+                initializing = initializing,
+                preparingStartedAt = preparingStartedAt,
+                wifiName = wifi.state.value.network?.ssid,
+                credentials = credentialState.credentials,
+                accountRemembered = credentialState.remembered,
+                accountChanging = credentialState.changing,
+                accountChanges = accountChanges,
+                selectedProvider = selectedProvider,
+                autoConnect = wantsAuto,
+                autoRunning = foregroundRunning,
+                theme = theme,
+                feedbackMessage = feedback.message,
+                feedbackId = feedback.id,
+                diagnosticLines = diagnostics.lines,
+                permissionMessage = permissionMessage(),
+                connectionMessage = connectionMessage()
+            )
         )
-    }
-
-    private fun maskAccount(value: String?): String = when {
-        value.isNullOrEmpty() -> "尚未设置"
-        value.length <= 4 -> value.take(1) + "•••"
-        else -> value.take(2) + "••••" + value.takeLast(2)
     }
 
     private data class RestoredOptions(val provider: Provider?, val theme: ThemeMode, val auto: Boolean)
@@ -596,9 +577,8 @@ internal fun embeddedPortalTarget(
 ): VisiblePortalTarget? {
     // Changes in flight invalidate the runtime's view of both the network and the account.
     if (initializing || configurationChanges > 0) return null
-    // Any Wi-Fi the caller is about to authenticate on qualifies — see readyState(): a name that was
-    // never read, or a school that renamed its SSID, must not lock the user out of the portal page.
-    val campus = network?.takeIf { it.isWifi } ?: return null
+    // Whether this network may carry a campus login is CampusNetworkPolicy's call, not a name compare.
+    val campus = network?.takeIf { CampusNetworkPolicy.allows(it) } ?: return null
     val account = credentials ?: return null
     val selected = provider ?: return null
     return VisiblePortalTarget(campus, account, selected)

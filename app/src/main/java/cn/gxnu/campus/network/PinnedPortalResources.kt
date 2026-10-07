@@ -1,5 +1,6 @@
 package cn.gxnu.campus.network
 
+import cn.gxnu.campus.core.CampusNetworkPolicy
 import cn.gxnu.campus.core.NetworkSnapshot
 import cn.gxnu.campus.core.PortalFailure
 import com.google.gson.JsonPrimitive
@@ -40,8 +41,9 @@ internal class PinnedPortalResources(
     /** Called from WebView's interception thread; never falls back to the default network. */
     fun load(url: String, method: String = "GET", headers: Map<String, String> = emptyMap(), mainFrame: Boolean = false): PinnedPortalReply {
         // The name is deliberately not part of this check: the interceptor exists to keep requests on
-        // the network we are authenticating on, and a school that renames its SSID must not break it.
-        if (method != "GET" || !network.isWifi || !permits(url)) return denied()
+        // the network we are authenticating on, and CampusNetworkPolicy is the one place that decides
+        // which networks those are.
+        if (method != "GET" || !CampusNetworkPolicy.allows(network) || !permits(url)) return denied()
         if (closed.get()) return failed(PortalFailure.UNREACHABLE)
         var current = URL(url)
         try {

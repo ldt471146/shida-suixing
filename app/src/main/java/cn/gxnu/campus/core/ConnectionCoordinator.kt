@@ -159,19 +159,18 @@ class ConnectionCoordinator(private val scope: CoroutineScope, private val trans
 
     private fun readyState(): ConnectionState = when {
         !configuration.permissionGranted -> ConnectionState(ConnectionStatus.NEED_PERMISSION, "需要网络识别权限才能确认校园 Wi-Fi。")
-        configuration.network?.isWifi != true -> ConnectionState(ConnectionStatus.NO_WIFI, "先连接校园 Wi-Fi，再来这里认证。")
-        // A Wi-Fi whose name was not read is NOT "some other network": on Android the name is hidden
-        // whenever the location permission or the system location switch is missing, and a school that
-        // renames its SSID looks the same from here. Refusing those would tell a user who is plainly
-        // sitting on the campus Wi-Fi that they are on a different one. A named network that is not the
-        // campus one is still refused, because then the name really is evidence.
-        configuration.network!!.isNamedCampus || configuration.network!!.hasUnknownName -> when {
-            configuration.credentials == null || configuration.credentials!!.account.isBlank() || configuration.credentials!!.password.isEmpty() ->
-                ConnectionState(ConnectionStatus.NEED_ACCOUNT, "请先设置校园网账号和密码。")
-            configuration.provider == null -> ConnectionState(ConnectionStatus.NEED_PROVIDER, "请选择校园网供应商。")
-            else -> ConnectionState(ConnectionStatus.READY, "校园 Wi-Fi 已连接，可以开始认证。")
+        else -> when (CampusNetworkPolicy.check(configuration.network)) {
+            CampusNetworkPolicy.Verdict.NotWifi ->
+                ConnectionState(ConnectionStatus.NO_WIFI, CampusNetworkPolicy.refusal(configuration.network)!!)
+            CampusNetworkPolicy.Verdict.OtherNetwork ->
+                ConnectionState(ConnectionStatus.OUTSIDE_CAMPUS, CampusNetworkPolicy.refusal(configuration.network)!!)
+            CampusNetworkPolicy.Verdict.Allowed -> when {
+                configuration.credentials == null || configuration.credentials!!.account.isBlank() || configuration.credentials!!.password.isEmpty() ->
+                    ConnectionState(ConnectionStatus.NEED_ACCOUNT, "请先设置校园网账号和密码。")
+                configuration.provider == null -> ConnectionState(ConnectionStatus.NEED_PROVIDER, "请选择校园网供应商。")
+                else -> ConnectionState(ConnectionStatus.READY, "校园 Wi-Fi 已连接，可以开始认证。")
+            }
         }
-        else -> ConnectionState(ConnectionStatus.OUTSIDE_CAMPUS, "请先连接校园 Wi-Fi。")
     }
 
     private fun readyTarget(): Target? {
