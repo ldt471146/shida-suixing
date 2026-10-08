@@ -56,6 +56,12 @@ jobs:
       - name: Make the Gradle wrapper executable
         run: chmod +x gradlew
 
+      # The embedded school page is driven by a JavaScript asset that no Gradle task covers, so it is
+      # checked here instead. It was written long ago but nothing ran it, which is how a bridge that
+      # silently filled nothing shipped: without this step the suite is documentation, not a gate.
+      - name: Check the official-page bridge
+        run: node --test scripts/test-portal-bridge.cjs
+
       - name: Test, lint and assemble
         run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleRelease --console=plain
 

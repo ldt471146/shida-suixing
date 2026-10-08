@@ -25,7 +25,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\preview-android.ps
 
 预览脚本检测指定设备，自动启动模拟器窗口并用 `adb install -r` 更新，保存的设置随更新保留。可用 `-State ONLINE`、`AUTH_ERROR`、`NO_WIFI` 等查看不同界面。`-Preview` 仅在 Debug APK 生效，使用独立内存控制器，不初始化凭据存储或校园认证模块；界面始终显示预览标识。
 
-APK 输出：`app/build/outputs/apk/release/app-release.apk`，本轮版本 0.9.2 / versionCode 22，可覆盖安装。正式分发走 GitHub Releases，见下节。
+APK 输出：`app/build/outputs/apk/release/app-release.apk`，本轮版本 0.9.3 / versionCode 23，可覆盖安装。正式分发走 GitHub Releases，见下节。
 
 ## 更新与分发
 
@@ -44,7 +44,7 @@ git push origin v0.6.0
 
 推送 `v*` 标签后 [发布工作流](.github/workflows/android-release.yml) 在 runner 上构建签名 APK，并发布 `shida-suixing-<版本>.apk` 与 `version.json`。应用读取 `version.json` 的 `versionCode` 判断是否需要更新。
 
-当前已发布：`v0.4.0`（versionCode 7）、`v0.4.1`（8）、`v0.4.2`（9）、`v0.5.0`（10）、`v0.6.0`（12）、`v0.6.1`（13）、`v0.7.0`（14）、`v0.7.1`（15）、`0.8.0`（16）、`0.8.1`（17）、`0.8.2`（18）、`0.8.3`（19）、`0.9.0`（20）、`0.9.1`（21）。`0.9.2`（22）为当前版本。
+当前已发布：`v0.4.0`（versionCode 7）、`v0.4.1`（8）、`v0.4.2`（9）、`v0.5.0`（10）、`v0.6.0`（12）、`v0.6.1`（13）、`v0.7.0`（14）、`v0.7.1`（15）、`0.8.0`（16）、`0.8.1`（17）、`0.8.2`（18）、`0.8.3`（19）、`0.9.0`（20）、`0.9.1`（21）、`0.9.2`（22）。`0.9.3`（23）为当前版本。
 
 签名密钥在仓库之外（`D:\gxsf-signing\release.jks`），通过仓库 Secrets 提供给 CI，不进入版本库。**请另行备份该密钥和口令**：丢失后已安装的旧版本无法再被覆盖更新。
 
@@ -227,5 +227,22 @@ powershell -NoProfile -File .\scripts\check-android.ps1 -Task assembleRelease
 测试 368 → 373。新增 `CampusTimetableMapperTest`（4 条，含「填了地点 → 服务器空 → 地点还在」这条完整复现）、`OfficialPortalAutomationTest` 加 1 条钉住 `filled`；`OfficialPortalTransport` 的 `when` 补上 `FILLED` 分支（无头链路只关心能不能提交，填好但没提交就继续轮询）。lint 0 错误。
 
 **没做真机验证**：桥脚本要真实学校页面才能跑（`portal-bridge.js` 第一件事就是校验 `location.hostname === 'yc.gxnu.edu.cn'`，模拟器上直接返回 `manual`），所以第二条的证据是单元测试 + 逐行读脚本，不是实跑。第一条同理需要真实账号才有课表可编辑。两条都需要用户在校园网/真机上确认。
+
+0.9.3 不修功能，修**为什么 0.9.2 那个 bug 能一路发布出去**。
+
+`portal-bridge.js`（把账号密码填进学校表单的那个脚本）有一套相当完整的测试：`scripts/test-portal-bridge.cjs`，30 条，覆盖恶意字符、重复表单、注销按钮、学校错误码、校外域名、协议勾选等等。**它从 0.4.0 起就在仓库里，但没有任何东西运行它** —— 不在 CI 的 workflow 里，也不在 `scripts/check-android.ps1` 里。所以它是文档，不是闸门：桥退化成「一个字段都不填」时，30 条测试里有 5 条会当场变红，而没有任何人看见。
+
+两处接上：
+
+- `.github/workflows/android-release.yml` 在 Gradle 之前加一步 `node --test scripts/test-portal-bridge.cjs` —— 桥坏了，发布流程直接失败，不会产出 APK。
+- `scripts/check-android.ps1` 在 `testDebugUnitTest` 时先跑同一套（本机没装 node 时给一条 warning 跳过，CI 上一定会跑）。
+
+同时给这套测试补了 4 条**钉住 0.9.2 修复本身**的用例：字段一出现就填、填完继续轮询直到能提交、只点一次、以及「没填过就不许报 filled」。
+
+**顺带修掉 2 条断言过宽的旧用例**（`waits for the schools original form handler and cookie helper`、`does not accept the schools agreement checkbox for the student`）：它们把「密码框必须为空」也当成了安全性质。但**填充和「同意协议」是两件事** —— 不替用户勾选协议、不替他点提交，这两条关键性质没变，而把账号密码填进去反而让用户少打两次字。每一条都改成断言真正的不变量（点了没点、勾了没勾），并在注释里写清为什么不再要求字段为空。
+
+**验证「闸门真的能拦住」**：故意把 bridge 改成不填充，`check-android.ps1` 立刻失败（30 条里 9 条红，exit 1）且**根本没走到 Gradle**；恢复后 30/30 通过。这一步是刻意做的 —— 一个不会失败的闸门跟没有闸门一样。
+
+测试：Android 373 项 + bridge 30 项全绿；lint 0 错误。**这次没有改任何 App 行为**，改的是检查本身。
 
 新版实际画面及操作记录：[模拟器检查](docs/design/emulator-verification.md)、[当前浅色首页](docs/design/screenshots/v5-home-light.png)。更新链路的实现与边界见[应用内更新](docs/design/app-update.md)。真实校园网登录与手机后台重连尚未完成实测，预览结果仅用于界面检查。更新流程的下载与系统安装确认需在实体手机验证。

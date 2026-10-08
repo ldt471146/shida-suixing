@@ -245,11 +245,17 @@ test('reads structured school errors without returning the schools message', () 
 test('waits for the schools original form handler and cookie helper', () => {
   const f = fixture();
   f.window.ee = undefined;
-  assert.equal(f.run().state, 'waiting');
-  assert.equal(f.password.value, '');
+  // 字段已经在页面上了，所以先填好（filled）；不能提交，因为学校的表单处理器还没就绪。
+  // 之前这里断言 'waiting' 且密码为空 —— 那正是用户报的「不给我填好」，现在填与提交分开判定。
+  assert.equal(f.run().state, 'filled');
+  assert.equal(f.password.value, 'fixture-password');
+  assert.equal(f.login.clicks, 0);
   f.window.ee = function () { return false; };
+  // 连 cookie 助手都没有：这不是「还没填」，而是学校这套登录流程根本跑不起来 ——
+  // 那一项在填充**之前**的前置检查里，所以这里仍是 waiting，且不该去动表单。
   f.window.cookie = undefined;
   assert.equal(f.run().state, 'waiting');
+  assert.equal(f.login.clicks, 0);
   f.window.cookie = { get() {}, set() {} };
   assert.equal(f.run().state, 'submitted');
 });
@@ -291,9 +297,10 @@ test('does not accept the schools agreement checkbox for the student', () => {
   const agreement = new Element('input', { name: 'C1', type: 'checkbox' });
   agreement.checked = false;
   f.elements.push(agreement);
+  // 关键性质没变：绝不替用户勾选协议、绝不点击。但「密码留空」不再是要求 ——
+  // 把账号密码填进表单与「同意协议」是两件事，填好字段反而让用户少打两次字。
   assert.deepEqual(f.run(), { state: 'manual', reason: 'PAGE' });
   assert.equal(agreement.checked, false);
-  assert.equal(f.password.value, '');
   assert.equal(f.login.clicks, 0);
 });
 
@@ -339,4 +346,47 @@ test('only operates in the top frame', () => {
   f.window.top = {};
   assert.deepEqual(f.run(), { state: 'manual', reason: 'PAGE' });
   assert.equal(f.password.value, '');
+});
+
+// 用户报的故障：「我填了东西，去认证的时候不给我填好」。
+// 桥原来是全有或全无的：任何一项提交前置条件不满足就返回 waiting，一个字段都不填，
+// 而界面只认得 waiting/submitted/rejected/manual，于是「填好了但还不能提交」显示成
+// 「正在准备学校登录页」—— 用户面对空表单，像是应用什么都没做。
+// 现在填充与点击分开判定：字段出现就填，点击才需要全部前置条件；中间态是 'filled'。
+test('fills the fields as soon as they exist, even while submission is still blocked', () => {
+  const f = fixture();
+  // 学校的表单处理器还没注册 —— 不能提交，但字段已经在页面上了。
+  f.window.ee = undefined;
+  assert.equal(f.run().state, 'filled');
+  assert.equal(f.account.value, 'fixture-student');
+  assert.equal(f.password.value, 'fixture-password');
+  assert.equal(f.login.clicks, 0);
+});
+
+test('keeps polling after filling and submits once the form becomes submittable', () => {
+  const f = fixture();
+  f.window.ee = undefined;
+  assert.equal(f.run().state, 'filled');
+  f.window.ee = function () { return false; };
+  // 第二次轮询就能提交了，而且只点一次。
+  assert.equal(f.run().state, 'submitted');
+  assert.equal(f.run().state, 'submitted');
+  assert.equal(f.login.clicks, 1);
+});
+
+test('never reports filled for a page it did not fill', () => {
+  const f = fixture({ controls: false });
+  assert.equal(f.run().state, 'waiting');
+  assert.equal(f.account, undefined);
+});
+
+test('a missing agreement checkbox still blocks the click but leaves the fields filled', () => {
+  const f = fixture();
+  const agreement = new Element('input', { name: 'C1', type: 'checkbox' });
+  agreement.checked = false;
+  f.elements.push(agreement);
+  assert.deepEqual(f.run(), { state: 'manual', reason: 'PAGE' });
+  assert.equal(agreement.checked, false);
+  assert.equal(f.login.clicks, 0);
+  assert.equal(f.password.value, 'fixture-password');
 });
