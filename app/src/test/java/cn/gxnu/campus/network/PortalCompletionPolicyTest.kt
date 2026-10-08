@@ -41,6 +41,48 @@ class PortalCompletionPolicyTest {
         )
     }
 
+    /**
+     * 用户报的故障：手机还没登录，认证页自己就返回了，用户既检查不了也点不了。
+     *
+     * 原因是「打开页面时第一次探测就已经 ONLINE」被当成了登录成功。可这条结论站不住：那两个探测
+     * 地址是操作系统用来检测强制门户的，校园网墙园为了让手机弹出「需登录」而**故意放行**它们，
+     * 所以未登录时探测照样返回 204。第一次就是 ONLINE 只说明这张网「看起来能上网」，
+     * **不说明本页发生过登录** —— 于是它必须停在 [PortalCompletion.AlreadyOnline]，不自动返回。
+     */
+    @Test fun aFirstProbeThatIsAlreadyOnlineIsNotThisPagesLogin() {
+        assertEquals(
+            PortalDecision.Settle(PortalCompletion.AlreadyOnline),
+            PortalCompletionPolicy.next(elapsedMillis = 0, probe = PortalProbe.ONLINE, firstProbe = PortalProbe.ONLINE)
+        )
+    }
+
+    /** 页面开着的时候从「不通」变成「通」，才是这一页真的把登录做成了。 */
+    @Test fun anOnlineProbeAfterANonOnlineOneIsThisPagesLogin() {
+        listOf(PortalProbe.OFFLINE, PortalProbe.UNREACHABLE).forEach { first ->
+            assertEquals(
+                "首次是 $first，之后转 ONLINE 算真转变",
+                PortalDecision.Settle(PortalCompletion.Online),
+                PortalCompletionPolicy.next(PortalCompletionPolicy.POLL_INTERVAL_MILLIS, PortalProbe.ONLINE, first)
+            )
+        }
+    }
+
+    /**
+     * 自动返回只留给 [PortalCompletion.Online]。`AlreadyOnline` 一旦也返回，用户就又被
+     * 「还没登录页面就没了」挡住了 —— 这条断言正是那个故障的守门人。
+     */
+    @Test fun onlyARealLoginMayCloseThePageOnItsOwn() {
+        assertNull(
+            "已经在线不是本页的功劳，不许自动返回",
+            PortalCompletionPolicy.autoReturnDelay(PortalCompletion.AlreadyOnline)
+        )
+        assertEquals(
+            PortalCompletionPolicy.CONFIRMATION_MILLIS,
+            PortalCompletionPolicy.autoReturnDelay(PortalCompletion.Online)
+        )
+        assertNull(PortalCompletionPolicy.autoReturnDelay(PortalCompletion.Checking))
+    }
+
     @Test fun theWatchNeverAsksForAProbeItCannotFitInsideTheDeadline() {
         val lastRoomForAProbe = PortalCompletionPolicy.POLL_DEADLINE_MILLIS - PortalCompletionPolicy.POLL_INTERVAL_MILLIS
         assertEquals(
@@ -79,6 +121,7 @@ class PortalCompletionPolicyTest {
         assertEquals(PortalCompletionPolicy.CONFIRMATION_MILLIS, PortalCompletionPolicy.autoReturnDelay(PortalCompletion.Online))
         assertEquals(1_500L, PortalCompletionPolicy.CONFIRMATION_MILLIS)
         assertNull(PortalCompletionPolicy.autoReturnDelay(PortalCompletion.Checking))
+        assertNull(PortalCompletionPolicy.autoReturnDelay(PortalCompletion.AlreadyOnline))
         assertNull(PortalCompletionPolicy.autoReturnDelay(PortalCompletion.Manual("仍未检测到外网，可在此页面手动登录。")))
     }
 

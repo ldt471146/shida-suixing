@@ -25,7 +25,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\preview-android.ps
 
 预览脚本检测指定设备，自动启动模拟器窗口并用 `adb install -r` 更新，保存的设置随更新保留。可用 `-State ONLINE`、`AUTH_ERROR`、`NO_WIFI` 等查看不同界面。`-Preview` 仅在 Debug APK 生效，使用独立内存控制器，不初始化凭据存储或校园认证模块；界面始终显示预览标识。
 
-APK 输出：`app/build/outputs/apk/release/app-release.apk`，本轮版本 0.9.0 / versionCode 20，可覆盖安装。正式分发走 GitHub Releases，见下节。
+APK 输出：`app/build/outputs/apk/release/app-release.apk`，本轮版本 0.9.1 / versionCode 21，可覆盖安装。正式分发走 GitHub Releases，见下节。
 
 ## 更新与分发
 
@@ -44,7 +44,7 @@ git push origin v0.6.0
 
 推送 `v*` 标签后 [发布工作流](.github/workflows/android-release.yml) 在 runner 上构建签名 APK，并发布 `shida-suixing-<版本>.apk` 与 `version.json`。应用读取 `version.json` 的 `versionCode` 判断是否需要更新。
 
-当前已发布：`v0.4.0`（versionCode 7）、`v0.4.1`（8）、`v0.4.2`（9）、`v0.5.0`（10）、`v0.6.0`（12）、`v0.6.1`（13）、`v0.7.0`（14）、`v0.7.1`（15）、`0.8.0`（16）、`0.8.1`（17）、`0.8.2`（18）、`0.8.3`（19）。`0.9.0`（20）为当前版本。
+当前已发布：`v0.4.0`（versionCode 7）、`v0.4.1`（8）、`v0.4.2`（9）、`v0.5.0`（10）、`v0.6.0`（12）、`v0.6.1`（13）、`v0.7.0`（14）、`v0.7.1`（15）、`0.8.0`（16）、`0.8.1`（17）、`0.8.2`（18）、`0.8.3`（19）、`0.9.0`（20）。`0.9.1`（21）为当前版本。
 
 签名密钥在仓库之外（`D:\gxsf-signing\release.jks`），通过仓库 Secrets 提供给 CI，不进入版本库。**请另行备份该密钥和口令**：丢失后已安装的旧版本无法再被覆盖更新。
 
@@ -188,5 +188,26 @@ powershell -NoProfile -File .\scripts\check-android.ps1 -Task assembleRelease
 测试 325 → 362（新增 37 条，**没有修改任何一条现有测试**，包括 16 条像素级列宽断言）。lint 0 错误（11 条 warning 全是既有的）。六张界面截图见 [模拟器检查](docs/design/emulator-verification.md)。
 
 **没做到的**：课表网格不是 Lazy 布局（固定 5–7 列 + 横向滚动），所以那里加不了 key；改成 Lazy 会动到 16 条钉住列宽算法的像素断言，这次没动。深色主题下的六个页面没有重新截图（走同一套 token，但没证据）。
+
+0.9.1 修**「有的时候都没登录，你就返回页面了，我都检查不了，也点不了」**。
+
+根因不是页面被误关那么简单，而是**两处都把「探测到外网」当成了「你登录成功了」**：
+
+- 内嵌认证页打开后**第一次**探测若返回 ONLINE，`PortalCompletionPolicy` 直接判定成功，页面 **1.5 秒后自己关掉** —— 用户来不及看，也来不及点。
+- `ConnectionCoordinator` 在手动连接时，只要首次探测为真就报「已连接，可以上网」并 return，**完全不认证**。所以点「连接校园网」也可能根本没登录。
+
+而那条探测在校园网上**本来就不可靠**：它用的是 `connectivitycheck.platform.hicloud.com/generate_204` 与 `cp.cloudflare.com/generate_204` —— 这两个正是**操作系统用来检测强制门户的地址**，校园网墙园为了让手机弹出「需登录」而**故意放行**它们。所以未登录时探测照样返回 204。这解释了用户说的「有的时候」（取决于哪条被放行）。
+
+**改法是让结论诚实，不是换探测点**（换地址可能造成「明明在线却说离线」，那是更糟的回归）：
+
+- 新增完成态 `PortalCompletion.AlreadyOnline`：**打开页面时第一次探测就已经 ONLINE** ≠ 本页登录成功，因为这一页**没有看到任何变化**。它**不自动返回**（`autoReturnDelay` 返回 null），页面保持可交互，显示「网络可用 / 若尚未登录，请在本页完成后再返回」+ 一个「完成」按钮，由用户自己决定。
+- 只有**页面开着的时候真的从非 ONLINE 变成 ONLINE**，才算这一页把登录做成了，才保留 1.5 秒自动返回。
+- 手动点「连接校园网」不再被首次探测短路，**真的会去认证**；自动连接保持原样（已经能上网就不去打扰认证入口）。**兜底保留**：认证入口不可达（`UNREACHABLE`/`TIMEOUT`）而这张网确实能上网时，仍然报「已连接，可以上网」，与改动前一致。
+
+判定规则是纯函数（`firstProbe` 参与 `PortalCompletionPolicy.next`），所以「首次即在线不算登录」和「转变才算」这两条都被单测直接钉住，而不是靠读代码。
+
+测试 362 → 368。新增 6 条，并**改写了 4 条把故障钉成正确行为的旧断言** —— 例如 `aPageOpenedWhileAlreadyOnlineIsConfirmedByTheFirstProbe` 原来断言首次在线就是 `Online`，而 `Online` 恰恰会关掉页面：**那两条断言本身就是这个 bug 的另一份拷贝**。改写的每一条都在注释里写清了为什么改。lint 0 错误。
+
+**没做真机验证**：这个 bug 需要真实校园网（模拟器的 `AndroidWifi` 不是校园网，`verifyInternet` 会先 `requireCampus` 直接拒绝），所以证据只有单元测试，真实登录链路仍需用户在校园网里实测。
 
 新版实际画面及操作记录：[模拟器检查](docs/design/emulator-verification.md)、[当前浅色首页](docs/design/screenshots/v5-home-light.png)。更新链路的实现与边界见[应用内更新](docs/design/app-update.md)。真实校园网登录与手机后台重连尚未完成实测，预览结果仅用于界面检查。更新流程的下载与系统安装确认需在实体手机验证。

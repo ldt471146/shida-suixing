@@ -86,6 +86,9 @@ class ConnectionCoordinator(private val scope: CoroutineScope, private val trans
         // Assign before starting, including when the caller uses an immediate dispatcher.
         val job = scope.launch(start = CoroutineStart.LAZY) {
             var authenticationAccepted = false
+            // Hoisted so the failure paths can tell "the Wi-Fi was already usable" from "we could not
+            // reach the school entry": the first must not be reported as a broken network.
+            var alreadyOnlineBeforeManualAttempt = false
             try {
                 if (ticket != generation) return@launch
                 mutableState.value = ConnectionState(
@@ -94,8 +97,16 @@ class ConnectionCoordinator(private val scope: CoroutineScope, private val trans
                 )
                 withTimeout(45_000) {
                     val alreadyOnline = initialInternetCheck(target.network)
+                    alreadyOnlineBeforeManualAttempt = alreadyOnline && !automatic
                     if (ticket != generation) return@withTimeout
-                    if (alreadyOnline) {
+                    // A green probe only ends the attempt untouched for an *automatic* run, which must
+                    // not disturb a Wi-Fi that already works. A manual tap is the user asking to be
+                    // logged in, and the probe cannot answer that question: on a campus walled garden
+                    // the addresses it uses are let through precisely so the phone can show its
+                    // "sign in" prompt, so they answer 204 while the account is still logged out.
+                    // Skipping authentication here is why the button could report success without
+                    // ever logging in.
+                    if (alreadyOnline && automatic) {
                         publish(ticket, ConnectionStatus.ONLINE, "校园 Wi-Fi 已连接，可以上网。")
                         return@withTimeout
                     }
@@ -118,13 +129,26 @@ class ConnectionCoordinator(private val scope: CoroutineScope, private val trans
                 }
             } catch (_: TimeoutCancellationException) {
                 val failure = if (authenticationAccepted) PortalFailure.VERIFICATION else PortalFailure.TIMEOUT
-                publish(ticket, ConnectionStatus.UNREACHABLE, failureMessage(failure), failure)
+                // A manual run that was already online before it tried keeps today's outcome instead of
+                // turning a usable Wi-Fi into an error just because the school entry was slow.
+                if (!authenticationAccepted && alreadyOnlineBeforeManualAttempt) {
+                    publish(ticket, ConnectionStatus.ONLINE, "校园 Wi-Fi 已连接，可以上网。")
+                } else {
+                    publish(ticket, ConnectionStatus.UNREACHABLE, failureMessage(failure), failure)
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: PortalException) {
                 val failure = if (authenticationAccepted) PortalFailure.VERIFICATION else error.reason
-                val status = if (failure == PortalFailure.ACCOUNT) ConnectionStatus.AUTH_ERROR else ConnectionStatus.UNREACHABLE
-                publish(ticket, status, error.message?.takeIf { it.isNotBlank() } ?: failureMessage(failure), failure)
+                // Same fallback as today, now only for the ways that mean "could not reach the entry":
+                // the account itself was never judged, so a working Wi-Fi must not be reported as broken.
+                val unreachableEntry = failure == PortalFailure.UNREACHABLE || failure == PortalFailure.TIMEOUT
+                if (!authenticationAccepted && unreachableEntry && alreadyOnlineBeforeManualAttempt) {
+                    publish(ticket, ConnectionStatus.ONLINE, "校园 Wi-Fi 已连接，可以上网。")
+                } else {
+                    val status = if (failure == PortalFailure.ACCOUNT) ConnectionStatus.AUTH_ERROR else ConnectionStatus.UNREACHABLE
+                    publish(ticket, status, error.message?.takeIf { it.isNotBlank() } ?: failureMessage(failure), failure)
+                }
             } catch (_: Exception) {
                 val failure = if (authenticationAccepted) PortalFailure.VERIFICATION else PortalFailure.UNREACHABLE
                 val message = if (authenticationAccepted) failureMessage(failure)

@@ -298,7 +298,22 @@ internal enum class PortalProbe { ONLINE, OFFLINE, UNREACHABLE }
 /** What the visible page shows while the watch runs and after it settles. */
 internal sealed interface PortalCompletion {
     data object Checking : PortalCompletion
+
+    /** This page watched a probe go from not-online to online: a login really happened. */
     data object Online : PortalCompletion
+
+    /**
+     * The very first probe was already online, so **this page never saw a login**: the page was
+     * opened onto a Wi-Fi that already reached the probe. The probe cannot tell "already
+     * authenticated" apart from "the probe address is let through without authenticating", and on a
+     * campus walled garden the second one is the normal case — the addresses used to detect a
+     * captive portal are deliberately let through so the phone can show its "sign in" prompt.
+     *
+     * So this is not a success and must never close the page on its own: the user is told the
+     * network looks usable and is left to finish or close the page themselves.
+     */
+    data object AlreadyOnline : PortalCompletion
+
     data class Manual(val reason: String) : PortalCompletion
 }
 
@@ -313,6 +328,10 @@ internal sealed interface PortalDecision {
  * button or says it succeeded is not evidence, so the only accepted success signal here is the
  * same HTTPS 204 probe the automatic attempt uses. The decision is a pure function of the time
  * spent watching and the last answer, which keeps the schedule and the give-up reason testable.
+ *
+ * A probe that is already ONLINE on the **first** look is deliberately not treated as success:
+ * see [PortalCompletion.AlreadyOnline]. Only a probe that *changes* from not-online to online
+ * while this page is open is evidence that this page's login went through.
  */
 internal object PortalCompletionPolicy {
     /** The probe costs a round trip, so polling faster would only add traffic, not speed. */
@@ -322,17 +341,28 @@ internal object PortalCompletionPolicy {
     /** Long enough to read the confirmation, short enough that nobody taps around it. */
     const val CONFIRMATION_MILLIS = 1_500L
 
-    fun next(elapsedMillis: Long, probe: PortalProbe?): PortalDecision = when {
-        probe == PortalProbe.ONLINE -> PortalDecision.Settle(PortalCompletion.Online)
-        // The page can be opened while the Wi-Fi is already online, so the first probe is now.
+    fun next(elapsedMillis: Long, probe: PortalProbe?, firstProbe: PortalProbe? = null): PortalDecision = when {
+        // Nothing has been probed yet, so the page is opened onto an unknown network and the first
+        // answer is only a starting point. The page can be opened while the Wi-Fi is already online,
+        // so the first probe is now.
         probe == null -> PortalDecision.Probe(0L)
+        probe == PortalProbe.ONLINE ->
+            // Online only counts as this page's own doing when the page also saw it *not* online.
+            if (firstProbe == PortalProbe.ONLINE) PortalDecision.Settle(PortalCompletion.AlreadyOnline)
+            else PortalDecision.Settle(PortalCompletion.Online)
         // Another probe needs a whole interval inside the deadline, so none lands past it.
         POLL_DEADLINE_MILLIS - elapsedMillis <= POLL_INTERVAL_MILLIS ->
             PortalDecision.Settle(PortalCompletion.Manual(fallbackReason(probe)))
         else -> PortalDecision.Probe(POLL_INTERVAL_MILLIS)
     }
 
-    /** How long the success state stands before the app returns by itself; null keeps the page open. */
+    /**
+     * How long a state stands before the app returns by itself, or null to keep the page open.
+     *
+     * Only [PortalCompletion.Online] returns: that is the one state this page earned by watching the
+     * Wi-Fi change. [PortalCompletion.AlreadyOnline] must keep the page open, because closing it is
+     * what left the user unable to check or press anything before they had logged in.
+     */
     fun autoReturnDelay(completion: PortalCompletion): Long? =
         if (completion == PortalCompletion.Online) CONFIRMATION_MILLIS else null
 
@@ -362,11 +392,15 @@ internal class PortalCompletionMonitor(
         return scope.launch {
             val startedAt = now()
             var probe: PortalProbe? = null
+            // Remembered so a probe that is online from the very first look is not mistaken for this
+            // page's own login: see PortalCompletion.AlreadyOnline.
+            var firstProbe: PortalProbe? = null
             while (true) {
-                when (val decision = PortalCompletionPolicy.next(now() - startedAt, probe)) {
+                when (val decision = PortalCompletionPolicy.next(now() - startedAt, probe, firstProbe)) {
                     is PortalDecision.Probe -> {
                         if (decision.delayMillis > 0) delay(decision.delayMillis)
                         probe = probeOnce()
+                        if (firstProbe == null) firstProbe = probe
                     }
                     is PortalDecision.Settle -> {
                         // stop() can land while a probe is still unwinding, and nothing here may

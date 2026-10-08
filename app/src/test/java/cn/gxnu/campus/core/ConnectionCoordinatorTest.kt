@@ -216,11 +216,15 @@ class ConnectionCoordinatorTest {
         coordinator.update(validated, credentials, Provider.MOBILE)
         coordinator.connect()
         runCurrent()
+        val eventsAfterManualConnect = transport.events.toList()
         coordinator.update(validated.copy(isValidated = false, isCaptivePortal = true), credentials, Provider.MOBILE)
         runCurrent()
 
+        // 这条测试管的是「能力丢失后不要自动重连」，与认证是否被短路无关：手动那一次确实认证了
+        // （见 manuallyConnectingAnAlreadyOnlineWifiStillAuthenticates），能力丢失后一个事件都不许加。
         assertEquals(ConnectionStatus.READY, coordinator.state.value.status)
-        assertEquals(listOf("verify:wifi-1"), transport.events)
+        assertEquals(eventsAfterManualConnect, transport.events.toList())
+        assertTrue("手动连接必须认证过", eventsAfterManualConnect.any { it.startsWith("auth:") })
     }
 
     // 一个**读得出名字**、又不是校园网的网络必须被挡住 —— 这时候名字就是证据。
@@ -292,8 +296,17 @@ class ConnectionCoordinatorTest {
         assertTrue(transport.events.isEmpty())
     }
 
-    // Catches unconditionally submitting a password while the chosen Wi-Fi is already online.
-    @Test fun alreadyOnlineWifiDoesNotSubmitCredentials() = runTest {
+    /**
+     * 用户报的故障（0.8.x 起就有）：手动点「连接校园网」，明明没登录却说「已连接，可以上网」。
+     *
+     * 这条测试原来断言手动连接**不提交**凭据 —— 也就是把故障本身钉成了正确行为。那是错的：那两个
+     * 探测地址是操作系统用来检测强制门户的，校园网墙园为了让手机弹出「需登录」而**故意放行**它们，
+     * 所以未登录时探测照样为真。手动点按钮是用户在要求「请把我登录进去」，这个问题探测回答不了。
+     *
+     * 现在：手动连接必须真的发起认证；认证不可达 + 探测为真 的兜底仍在（下一条钉住），所以
+     * 不会把「本来能上网」的情况误报成失败。
+     */
+    @Test fun manuallyConnectingAnAlreadyOnlineWifiStillAuthenticates() = runTest {
         val transport = TestTransport(verify = { true })
         val coordinator = ConnectionCoordinator(this, transport)
         coordinator.update(campus, credentials, Provider.MOBILE)
@@ -301,7 +314,37 @@ class ConnectionCoordinatorTest {
         runCurrent()
 
         assertEquals(ConnectionStatus.ONLINE, coordinator.state.value.status)
-        assertEquals(listOf("verify:wifi-1"), transport.events)
+        // 关键：认证真的发出去了，而不是被首次探测短路掉。
+        assertTrue("手动连接必须真的认证", transport.events.contains("auth:wifi-1:sample-student"))
+    }
+
+    /**
+     * 兜底不许弄坏：认证入口不可达、而这张网确实已经能上网时，仍然报「已连接，可以上网」，
+     * 与改动前一致。否则用户会在一个能用的网络上看到一条红字失败。
+     */
+    @Test fun anUnreachableEntryOnAnAlreadyOnlineWifiStillReportsOnline() = runTest {
+        val transport = TestTransport(
+            verify = { true },
+            authenticate = { _, _ -> throw PortalException(PortalFailure.UNREACHABLE, "学校认证入口暂时无法访问，请稍后重试。") }
+        )
+        val coordinator = ConnectionCoordinator(this, transport)
+        coordinator.update(campus, credentials, Provider.MOBILE)
+        coordinator.connect()
+        runCurrent()
+
+        assertEquals(ConnectionStatus.ONLINE, coordinator.state.value.status)
+        assertNull(coordinator.state.value.failure)
+    }
+
+    /** 自动连接不许被这次改动波及：已经能上网就不要去打扰认证入口。 */
+    @Test fun anAutomaticAttemptOnAnAlreadyOnlineWifiDoesNotAuthenticate() = runTest {
+        val transport = TestTransport(verify = { true })
+        val coordinator = ConnectionCoordinator(this, transport)
+        coordinator.update(campus, credentials, Provider.MOBILE, autoConnect = true)
+        runCurrent()
+
+        assertEquals(ConnectionStatus.ONLINE, coordinator.state.value.status)
+        assertTrue("自动跑不应提交凭据", transport.events.none { it.startsWith("auth:") })
     }
 
     // Catches skipping verification after a protocol success or probing another network.

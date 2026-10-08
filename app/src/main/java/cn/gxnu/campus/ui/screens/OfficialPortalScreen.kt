@@ -155,6 +155,8 @@ fun OfficialPortalScreen(
  */
 private fun progressNotice(completion: PortalCompletion, page: PortalPageState, autoFilled: Boolean): String = when {
     completion == PortalCompletion.Online -> "认证成功，正在返回首页。"
+    // No auto-return here, so the line says what is true and leaves the choice to the user.
+    completion == PortalCompletion.AlreadyOnline -> "这张 Wi-Fi 已经可以上网，若尚未登录请在本页完成。"
     page is PortalPageState.Failed -> "学校认证页未能打开。"
     page is PortalPageState.Loading -> "正在打开学校登录页…"
     autoFilled -> "已自动填写，正在提交认证。"
@@ -177,6 +179,18 @@ private fun CompletionPanel(completion: PortalCompletion, pageFailed: Boolean, o
             ink = palette.success,
             wash = palette.successWash,
             detail = "校园网已可上网，即将自动返回首页。",
+            trailing = {
+                TextButton(onClick = onClose, modifier = Modifier.heightIn(min = 48.dp)) { Text("完成") }
+            }
+        )
+        // Already online before this page opened: the app has no evidence a login happened, so the
+        // page stays put and the user decides. Auto-returning here is what closed the page before the
+        // user could check anything or press anything.
+        completion == PortalCompletion.AlreadyOnline -> OutcomeRow(
+            pill = "网络可用",
+            ink = palette.success,
+            wash = palette.successWash,
+            detail = "若尚未登录，请在本页完成后再返回。",
             trailing = {
                 TextButton(onClick = onClose, modifier = Modifier.heightIn(min = 48.dp)) { Text("完成") }
             }
