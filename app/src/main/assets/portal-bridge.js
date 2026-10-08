@@ -31,6 +31,98 @@
     element.dispatchEvent(new window.Event('input', { bubbles: true }));
     element.dispatchEvent(new window.Event('change', { bubbles: true }));
   }
+
+  /**
+   * 学校自己声明的运营商配置。实测 yc.gxnu.edu.cn 上是：
+   *   {"yys":{"mode":"radiobutton","data":[{"suffix":""},{"suffix":"@ctc"},...]}}
+   * 它同时告诉我们两件事：控件是哪种形态、以及这个学校**到底有哪几个**运营商。
+   * 后者很重要 —— App 里列了广电网络(@gd)，而这所学校并没有这一项。
+   */
+  function carrierSuffixes() {
+    try {
+      var raw = window.carrier;
+      if (!raw) return null;
+      var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      var yys = parsed && parsed.yys;
+      if (!yys || !yys.data || !yys.data.length) return null;
+      return yys.data.map(function (item) {
+        return String(item.suffix == null ? '' : item.suffix);
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /**
+   * 把运营商选成 suffix，返回 'ok'（已选中）或 'none'（这所学校没有这一项）。
+   *
+   * 为什么不能只找 `<select>`：运营商控件的形态由学校的 `carrier.yys.mode` 决定，实测这台
+   * 门户给的是 `radiobutton`，页面上**一个 select 都没有**。原来只找
+   * `select[name="ISP_select"]` 的写法因此永远匹配不到，用户看到的就是「运营商那里还是没有
+   * 选择」。现在按学校声明的后缀集合去认控件，select 与单选按钮都能处理。
+   *
+   * 顺序上先认「后缀集合」再选值，是为了不误碰页面上其它同值控件 —— 空后缀尤其危险，
+   * 很多无关控件也以空串为值。
+   */
+  function setProvider(suffix) {
+    var wanted = String(suffix == null ? '' : suffix);
+    // 学校没声明时的兜底：本门户文档化的四个后缀。没有它就认不出单选按钮组。
+    var declared = carrierSuffixes() || ['', '@ctc', '@cuc', '@cmc', '@gd'];
+
+    // 1) select 形态（部分模板/学校用它，字段名固定 ISP_select）
+    var selects = elements('select[name="ISP_select"]');
+    if (selects.length === 1 && !selects[0].disabled) {
+      var option = Array.prototype.find.call(selects[0].options, function (item) {
+        return !item.disabled && String(item.value) === wanted;
+      });
+      if (option) { setValue(selects[0], wanted); return 'ok'; }
+      return 'none';
+    }
+
+    // 2) 单选按钮形态（本机实测的形态）。同一 name 的一组才算「那组运营商」。
+    var radios = elements('input[type="radio"]').filter(function (input) {
+      return !input.disabled && declared.indexOf(String(input.value)) !== -1;
+    });
+    if (radios.length) {
+      var counts = {};
+      radios.forEach(function (input) {
+        var key = String(input.name);
+        counts[key] = (counts[key] || 0) + 1;
+      });
+      var best = null;
+      Object.keys(counts).forEach(function (key) {
+        if (best === null || counts[key] > counts[best]) best = key;
+      });
+      var members = radios.filter(function (input) { return String(input.name) === best; });
+      // 只有一项的「组」更可能是无关控件，不足以当成运营商选择器。
+      if (members.length >= 2) {
+        var chosen = members.filter(function (input) { return String(input.value) === wanted; })[0];
+        if (!chosen) return 'none';
+        // click() 才会让学校自己的脚本收到通知；直接改 checked 有些模板不认。
+        if (!chosen.checked) chosen.click();
+        chosen.dispatchEvent(new window.Event('change', { bubbles: true }));
+        return 'ok';
+      }
+    }
+
+    // 3) 名字不叫 ISP_select 的 select：只认值匹配的 option
+    var anySelect = elements('select');
+    for (var i = 0; i < anySelect.length; i++) {
+      if (anySelect[i].disabled) continue;
+      var found = Array.prototype.find.call(anySelect[i].options, function (item) {
+        return !item.disabled && String(item.value) === wanted;
+      });
+      if (found) { setValue(anySelect[i], wanted); return 'ok'; }
+    }
+
+    // 4) 隐藏字段形态：提交时才读值（visible() 会滤掉 hidden，所以直接查）
+    var hidden = document.querySelectorAll('input[name="ISP_select"]');
+    for (var j = 0; j < hidden.length; j++) {
+      if (String(hidden[j].type) === 'hidden') { setValue(hidden[j], wanted); return 'ok'; }
+    }
+
+    return 'none';
+  }
   function validAddress(ip, ipv6) {
     var parts = String(ip || '').split('.');
     var ipv4 = parts.length === 4 && parts.every(function (part) {
@@ -149,12 +241,7 @@
     if (filledAccount) setValue(accounts[0], normalizedAccount);
     if (filledPassword) setValue(passwords[0], String(password));
 
-    var providers = elements('select[name="ISP_select"]');
-    var select = providers.length === 1 ? providers[0] : null;
-    var option = select ? Array.prototype.find.call(select.options, function (item) {
-      return !item.disabled && String(item.value) === providerSuffix;
-    }) : null;
-    if (option && !select.disabled) setValue(select, providerSuffix);
+    var provider = setProvider(providerSuffix);
 
     if (accounts.length !== 1 || passwords.length !== 1 || buttons.length !== 1) {
       return result(filledAccount || filledPassword ? 'filled' : 'waiting');
@@ -167,7 +254,8 @@
     if (elements('input[name="C1"][type="checkbox"]').some(function (checkbox) { return !checkbox.checked; })) {
       return result('manual', 'PAGE');
     }
-    if (!select || !option || select.disabled) return result('manual', 'PAGE');
+    // 选不上运营商就不许提交：带着错误的运营商去认证，比不提交更糟。
+    if (provider !== 'ok') return result('manual', 'PROVIDER');
     if (!normalizedAccount || !String(password).length) return result('rejected', 'ACCOUNT');
 
     elements('input[type="checkbox"]').forEach(function (checkbox) {

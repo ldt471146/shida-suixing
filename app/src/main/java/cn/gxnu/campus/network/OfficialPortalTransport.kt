@@ -143,6 +143,9 @@ class OfficialPortalTransport(context: Context, private val wifi: WifiEnvironmen
                             }
                             BridgeStage.MANUAL -> throw when (decision.reason) {
                                 "CAPTCHA" -> PortalException(PortalFailure.UNSUPPORTED, "学校要求验证码，请打开学校原网页完成认证。")
+                                // 运营商是用户自己选的，学校页面上没有这一项时必须让他去改，
+                                // 而不是含糊地说「需要手动操作」—— 那样他不知道该动哪里。
+                                "PROVIDER" -> PortalException(PortalFailure.UNSUPPORTED, "学校认证页面上没有你所选的运营商，请回到「校园网」改选运营商后重试。")
                                 else -> PortalException(PortalFailure.UNSUPPORTED, "学校认证页面需要手动操作，请打开学校原网页。")
                             }
                         }

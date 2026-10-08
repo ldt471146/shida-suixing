@@ -40,6 +40,12 @@ class Element {
   }
   click() {
     this.clicks++;
+    // 真实 DOM 里点单选按钮会把它设为选中，并且**取消同组其它项的选中**。
+    // 夹具要照做：否则「两个运营商同时亮着」这种错会被漏掉。
+    if (this.type === 'radio') {
+      if (Array.isArray(this.radioGroup)) for (const sibling of this.radioGroup) sibling.checked = false;
+      this.checked = true;
+    }
     this.dispatchEvent({ type: 'click' });
     if (this.type === 'submit' && this.form) this.form.dispatchEvent({ type: 'submit' });
   }
@@ -62,7 +68,7 @@ function matches(element, selector) {
   return true;
 }
 
-function fixture({ ready = true, controls = true } = {}) {
+function fixture({ ready = true, controls = true, carrier = 'select' } = {}) {
   const elements = [];
   const document = {
     readyState: 'complete',
@@ -105,22 +111,47 @@ function fixture({ ready = true, controls = true } = {}) {
     form.onsubmit = function () { window.ee(1); return false; };
     account = new Element('input', { name: 'DDDDD', type: 'text' });
     password = new Element('input', { name: 'upass', type: 'password' });
-    provider = new Element('select', { name: 'ISP_select' });
-    provider.options = [
-      { value: '', textContent: '校园网' }, { value: '@ctc', textContent: '中国电信' },
-      { value: '@cuc', textContent: '中国联通' }, { value: '@cmc', textContent: '中国移动' },
-      { value: '@gd', textContent: '广电网络' },
-    ];
-    provider.value = '@ctc';
     login = new Element('input', { name: '0MKKey', type: 'submit', value: '登录' });
     login.onclick = function () {};
     logout = new Element('button', { id: 'logout', type: 'button' }, '注销');
     logout.onclick = function () {};
-    for (const control of [account, password, provider, login]) {
+    const providerControls = [];
+    if (carrier === 'radiobutton') {
+      // 本门户实测形态：carrier.yys.mode = radiobutton，页面上**没有** select。
+      // 学校自己声明的四个后缀（注意没有广电网络 @gd）。
+      window.carrier = JSON.stringify({
+        yys: {
+          title: '服务类型', mode: 'radiobutton', type: '0', defaultID: '1',
+          data: [
+            { id: '1', name: '校园用户', suffix: '' },
+            { id: '2', name: '中国电信', suffix: '@ctc' },
+            { id: '3', name: '中国联通', suffix: '@cuc' },
+            { id: '4', name: '中国移动', suffix: '@cmc' },
+          ],
+        },
+      });
+      for (const item of [{ suffix: '' }, { suffix: '@ctc' }, { suffix: '@cuc' }, { suffix: '@cmc' }]) {
+        const radio = new Element('input', { name: 'ISP_select', type: 'radio', value: item.suffix });
+        radio.checked = item.suffix === '';
+        providerControls.push(radio);
+      }
+      // 同 name 的是一组：选中一个要取消其它。
+      for (const radio of providerControls) radio.radioGroup = providerControls;
+    } else {
+      provider = new Element('select', { name: 'ISP_select' });
+      provider.options = [
+        { value: '', textContent: '校园网' }, { value: '@ctc', textContent: '中国电信' },
+        { value: '@cuc', textContent: '中国联通' }, { value: '@cmc', textContent: '中国移动' },
+        { value: '@gd', textContent: '广电网络' },
+      ];
+      provider.value = '@ctc';
+      providerControls.push(provider);
+    }
+    for (const control of [account, password, ...providerControls, login]) {
       control.form = form;
       control.parentElement = form;
     }
-    elements.push(form, account, password, provider, login, logout);
+    elements.push(form, account, password, ...providerControls, login, logout);
   }
   if (controls) addControls();
   function run(accountValue = 'fixture-student', passwordValue = 'fixture-password', suffix = '', title = '校园网') {
@@ -133,6 +164,7 @@ function fixture({ ready = true, controls = true } = {}) {
     get account() { return account; }, get password() { return password; },
     get provider() { return provider; }, get login() { return login; }, get logout() { return logout; },
     get form() { return form; },
+    get radios() { return elements.filter(element => element.type === 'radio'); },
   };
 }
 
@@ -323,7 +355,9 @@ test('a visible captcha requires manual interaction before filling credentials',
 test('unknown provider is not silently submitted with the default operator', () => {
   const f = fixture();
   f.provider.options = [{ value: '@ctc', textContent: '中国电信' }];
-  assert.deepEqual(f.run(), { state: 'manual', reason: 'PAGE' });
+  // 关键性质没变：绝不拿默认运营商替他提交。理由码从笼统的 PAGE 改成 PROVIDER，
+  // 因为这是用户能自己修的一件事（回去改选运营商），值得单独说。
+  assert.deepEqual(f.run(), { state: 'manual', reason: 'PROVIDER' });
   assert.equal(f.login.clicks, 0);
 });
 
@@ -346,6 +380,60 @@ test('only operates in the top frame', () => {
   f.window.top = {};
   assert.deepEqual(f.run(), { state: 'manual', reason: 'PAGE' });
   assert.equal(f.password.value, '');
+});
+
+// 用户报的故障：「运营商那里还是没有选择」。
+// 实测 yc.gxnu.edu.cn 的 window.carrier 是 mode:"radiobutton"，渲染出来的页面**一个 select
+// 都没有**（浏览器里查 selects 为空数组）。桥原来只找 select[name="ISP_select"]，所以运营商
+// 永远选不上。下面这几条用真实形态（单选按钮）钉住修复。
+test('selects the operator from the schools radiobutton group, not only from a select', () => {
+  const f = fixture({ carrier: 'radiobutton' });
+  assert.equal(f.run('fixture-student', 'fixture-password', '@cmc', '中国移动').state, 'submitted');
+  const chosen = f.radios.filter(r => r.value === '@cmc');
+  assert.equal(chosen.length, 1);
+  assert.equal(chosen[0].checked, true);
+  assert.equal(chosen[0].clicks, 1);
+  // 其它运营商不许被顺手勾上
+  assert.deepEqual(f.radios.filter(r => r.value !== '@cmc').map(r => r.checked), [false, false, false]);
+  assert.equal(f.login.clicks, 1);
+});
+
+test('the campus operator is selectable too, including its empty suffix', () => {
+  const f = fixture({ carrier: 'radiobutton' });
+  assert.equal(f.run('fixture-student', 'fixture-password', '', '校园网').state, 'submitted');
+  assert.equal(f.radios.filter(r => r.value === '')[0].checked, true);
+  assert.equal(f.login.clicks, 1);
+});
+
+test('a radio group is re-selected when the operator changes between attempts', () => {
+  const f = fixture({ carrier: 'radiobutton' });
+  assert.equal(f.run('fixture-student', 'fixture-password', '@ctc', '中国电信').state, 'submitted');
+  assert.equal(f.radios.filter(r => r.value === '@ctc')[0].checked, true);
+  // 换一个运营商：上一次的选中必须被替换，而不是两个都亮着
+  const g = fixture({ carrier: 'radiobutton' });
+  assert.equal(g.run('fixture-student', 'fixture-password', '@cuc', '中国联通').state, 'submitted');
+  assert.equal(g.radios.filter(r => r.value === '@cuc')[0].checked, true);
+});
+
+test('an operator the school does not offer is refused by name, not submitted', () => {
+  // 这所学校只有 校园用户/电信/联通/移动，**没有广电网络**，而 App 里列了它。
+  // 选不上就不许提交（否则会拿错误的运营商去认证），并且要说清是运营商的问题。
+  const f = fixture({ carrier: 'radiobutton' });
+  assert.deepEqual(f.run('fixture-student', 'fixture-password', '@gd', '广电网络'),
+    { state: 'manual', reason: 'PROVIDER' });
+  assert.equal(f.login.clicks, 0);
+  assert.deepEqual(f.radios.map(r => r.checked), [true, false, false, false]);
+  // 但账号密码仍然先填好了，用户只需改运营商
+  assert.equal(f.account.value, 'fixture-student');
+  assert.equal(f.password.value, 'fixture-password');
+});
+
+test('the select form keeps working for schools that use one', () => {
+  // 修复不能只照顾单选按钮这一种形态。
+  const f = fixture({ carrier: 'select' });
+  assert.equal(f.run('fixture-student', 'fixture-password', '@cmc', '中国移动').state, 'submitted');
+  assert.equal(f.provider.value, '@cmc');
+  assert.equal(f.login.clicks, 1);
 });
 
 // 用户报的故障：「我填了东西，去认证的时候不给我填好」。

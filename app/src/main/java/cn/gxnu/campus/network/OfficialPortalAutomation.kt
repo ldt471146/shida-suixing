@@ -44,7 +44,9 @@ object OfficialPortalAutomation {
                 else -> return BridgeDecision(BridgeStage.MANUAL, "PAGE")
             }
             val reason = if (stage == BridgeStage.WAITING || stage == BridgeStage.SUBMITTED || stage == BridgeStage.FILLED) "" else {
-                string(data.asJsonObject.get("reason")).takeIf { it in setOf("ACCOUNT", "CAPTCHA", "PAGE") } ?: "PAGE"
+                // PROVIDER: 学校页面上找不到用户所选的运营商（本门户就没有「广电网络」这一项）。
+                // 这要单独告诉用户去改选，而不是笼统地说「需要手动操作」。
+                string(data.asJsonObject.get("reason")).takeIf { it in setOf("ACCOUNT", "CAPTCHA", "PAGE", "PROVIDER") } ?: "PAGE"
             }
             BridgeDecision(stage, reason)
         } catch (_: Exception) {
