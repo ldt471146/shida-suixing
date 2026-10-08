@@ -25,7 +25,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\preview-android.ps
 
 预览脚本检测指定设备，自动启动模拟器窗口并用 `adb install -r` 更新，保存的设置随更新保留。可用 `-State ONLINE`、`AUTH_ERROR`、`NO_WIFI` 等查看不同界面。`-Preview` 仅在 Debug APK 生效，使用独立内存控制器，不初始化凭据存储或校园认证模块；界面始终显示预览标识。
 
-APK 输出：`app/build/outputs/apk/release/app-release.apk`，本轮版本 0.9.1 / versionCode 21，可覆盖安装。正式分发走 GitHub Releases，见下节。
+APK 输出：`app/build/outputs/apk/release/app-release.apk`，本轮版本 0.9.2 / versionCode 22，可覆盖安装。正式分发走 GitHub Releases，见下节。
 
 ## 更新与分发
 
@@ -44,7 +44,7 @@ git push origin v0.6.0
 
 推送 `v*` 标签后 [发布工作流](.github/workflows/android-release.yml) 在 runner 上构建签名 APK，并发布 `shida-suixing-<版本>.apk` 与 `version.json`。应用读取 `version.json` 的 `versionCode` 判断是否需要更新。
 
-当前已发布：`v0.4.0`（versionCode 7）、`v0.4.1`（8）、`v0.4.2`（9）、`v0.5.0`（10）、`v0.6.0`（12）、`v0.6.1`（13）、`v0.7.0`（14）、`v0.7.1`（15）、`0.8.0`（16）、`0.8.1`（17）、`0.8.2`（18）、`0.8.3`（19）、`0.9.0`（20）。`0.9.1`（21）为当前版本。
+当前已发布：`v0.4.0`（versionCode 7）、`v0.4.1`（8）、`v0.4.2`（9）、`v0.5.0`（10）、`v0.6.0`（12）、`v0.6.1`（13）、`v0.7.0`（14）、`v0.7.1`（15）、`0.8.0`（16）、`0.8.1`（17）、`0.8.2`（18）、`0.8.3`（19）、`0.9.0`（20）、`0.9.1`（21）。`0.9.2`（22）为当前版本。
 
 签名密钥在仓库之外（`D:\gxsf-signing\release.jks`），通过仓库 Secrets 提供给 CI，不进入版本库。**请另行备份该密钥和口令**：丢失后已安装的旧版本无法再被覆盖更新。
 
@@ -209,5 +209,23 @@ powershell -NoProfile -File .\scripts\check-android.ps1 -Task assembleRelease
 测试 362 → 368。新增 6 条，并**改写了 4 条把故障钉成正确行为的旧断言** —— 例如 `aPageOpenedWhileAlreadyOnlineIsConfirmedByTheFirstProbe` 原来断言首次在线就是 `Online`，而 `Online` 恰恰会关掉页面：**那两条断言本身就是这个 bug 的另一份拷贝**。改写的每一条都在注释里写清了为什么改。lint 0 错误。
 
 **没做真机验证**：这个 bug 需要真实校园网（模拟器的 `AndroidWifi` 不是校园网，`verifyInternet` 会先 `requireCampus` 直接拒绝），所以证据只有单元测试，真实登录链路仍需用户在校园网里实测。
+
+0.9.2 修用户报的两个问题，它们看起来是两件事，其实是**同一种毛病：本地填的东西被别处覆盖 / 桥的中间态被折叠成「什么都没做」**。
+
+**一、「输入上课地点虽然可以显示，但是关闭软件再打开就没有了」。**
+
+地点**没有存坏** —— `TimetableStore` 的 `room` 写读是对称的，编辑保存也真的落了盘。真正的原因在**取回**这条链路上：`CampusTimetableMapper.build` 会按服务器返回把每一门课**重建一遍**，而这个账号的 `skdd`（上课地点）是空的，于是手填的地点被空字符串覆盖。所以「填完当场看得见、重开就没了」是**重新登录/刷新课表**造成的，不是存储造成的 —— 只测编辑保存永远发现不了。
+
+现在 `build` 多收一个 `previous`（本机已有的那份课表）：**服务器给了地点就以服务器为准，没给就沿用它自己填的**。匹配键是「课程名 + 星期 + 起止节次」——这几个字段服务器一定会给，而地点正是唯一会被人手工补上的那个；换了另一门课不会借用别人的地点。
+
+**二、「我填了东西，去认证的时候不给我填好」。**
+
+内嵌认证页靠 `portal-bridge.js` 把账号密码填进学校的表单。那个脚本原来是**全有或全无**的：账号框、密码框、登录按钮、表单的 `onsubmit`、`ISP_select`、勾选框……**任何一项不满足就直接回答 `waiting`**，一个字段都不填。而界面只有 `waiting / submitted / rejected / manual` 四种回答可理解，于是「已经填好但还不能提交」只能显示成「正在准备学校登录页」—— 用户面对一个空表单，看起来就像应用什么都没做。
+
+现在**填充与点击分开判定**：字段一出现就填（填是幂等的、没有风险），只有点击需要等全部前置条件。中间态是新的 `BridgeStage.FILLED` —— 它是**进展不是终态**，调用方继续轮询，界面说「账号已自动填好，正在提交认证」。
+
+测试 368 → 373。新增 `CampusTimetableMapperTest`（4 条，含「填了地点 → 服务器空 → 地点还在」这条完整复现）、`OfficialPortalAutomationTest` 加 1 条钉住 `filled`；`OfficialPortalTransport` 的 `when` 补上 `FILLED` 分支（无头链路只关心能不能提交，填好但没提交就继续轮询）。lint 0 错误。
+
+**没做真机验证**：桥脚本要真实学校页面才能跑（`portal-bridge.js` 第一件事就是校验 `location.hostname === 'yc.gxnu.edu.cn'`，模拟器上直接返回 `manual`），所以第二条的证据是单元测试 + 逐行读脚本，不是实跑。第一条同理需要真实账号才有课表可编辑。两条都需要用户在校园网/真机上确认。
 
 新版实际画面及操作记录：[模拟器检查](docs/design/emulator-verification.md)、[当前浅色首页](docs/design/screenshots/v5-home-light.png)。更新链路的实现与边界见[应用内更新](docs/design/app-update.md)。真实校园网登录与手机后台重连尚未完成实测，预览结果仅用于界面检查。更新流程的下载与系统安装确认需在实体手机验证。

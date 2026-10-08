@@ -41,4 +41,22 @@ class OfficialPortalAutomationTest {
             """{"state":"manual","reason":"CAPTCHA"}"""
         ))
     }
+
+    /**
+     * 用户报的「我填了东西，去认证的时候不给我填好」。
+     *
+     * 桥脚本原来只有 waiting / submitted / rejected / manual 四种回答，而「字段已经填好、但还没有
+     * 满足点击条件」只能报成 waiting —— 界面于是显示「正在准备学校登录页」，用户看到的却是一个
+     * 空表单，像是应用什么都没做。现在这种中间态是独立的 `filled`：它是进展，不是终态，
+     * 调用方继续轮询，界面说清「账号已自动填好」。
+     */
+    @Test fun aFilledButUnsubmittableFormReportsProgressInsteadOfWaiting() {
+        assertEquals(BridgeDecision(BridgeStage.FILLED), OfficialPortalAutomation.decision(
+            """{"state":"filled"}"""
+        ))
+        // Same rule as the other non-error states: no payload may ride along.
+        assertEquals(BridgeDecision(BridgeStage.FILLED), OfficialPortalAutomation.decision(
+            """{"state":"filled","reason":"fixture-password"}"""
+        ))
+    }
 }

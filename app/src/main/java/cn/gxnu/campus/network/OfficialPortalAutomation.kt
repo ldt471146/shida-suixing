@@ -10,7 +10,7 @@ import com.google.gson.stream.JsonToken
 import java.io.StringReader
 import org.json.JSONObject
 
-enum class BridgeStage { WAITING, SUBMITTED, REJECTED, MANUAL }
+enum class BridgeStage { WAITING, FILLED, SUBMITTED, REJECTED, MANUAL }
 
 data class BridgeDecision(val stage: BridgeStage, val reason: String = "")
 
@@ -35,12 +35,15 @@ object OfficialPortalAutomation {
             if (!data.isJsonObject) return BridgeDecision(BridgeStage.MANUAL, "PAGE")
             val stage = when (string(data.asJsonObject.get("state"))) {
                 "waiting" -> BridgeStage.WAITING
+                // The form's fields exist and have been filled, but the submit preconditions are not
+                // all met yet. This is progress, not a terminal state: the caller keeps polling.
+                "filled" -> BridgeStage.FILLED
                 "submitted" -> BridgeStage.SUBMITTED
                 "rejected" -> BridgeStage.REJECTED
                 "manual" -> BridgeStage.MANUAL
                 else -> return BridgeDecision(BridgeStage.MANUAL, "PAGE")
             }
-            val reason = if (stage == BridgeStage.WAITING || stage == BridgeStage.SUBMITTED) "" else {
+            val reason = if (stage == BridgeStage.WAITING || stage == BridgeStage.SUBMITTED || stage == BridgeStage.FILLED) "" else {
                 string(data.asJsonObject.get("reason")).takeIf { it in setOf("ACCOUNT", "CAPTCHA", "PAGE") } ?: "PAGE"
             }
             BridgeDecision(stage, reason)

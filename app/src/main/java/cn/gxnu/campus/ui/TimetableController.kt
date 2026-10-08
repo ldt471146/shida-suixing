@@ -183,7 +183,9 @@ class TimetableController internal constructor(
                     is CampusTimetableApi.Fetch.Ok -> result.courses
                 }
                 val timetable = try {
-                    CampusTimetableMapper.build(fetched, term = "", now())
+                    // The timetable already on screen is handed in so a 上课地点 the user typed is not
+                    // wiped by the server's empty one on every refresh. See CampusTimetableMapper.
+                    CampusTimetableMapper.build(fetched, term = "", now(), previous = store.load())
                 } catch (refusal: TimetableException) {
                     return Outcome.Refused(campusRefusal(refusal), signedOut = false)
                 }

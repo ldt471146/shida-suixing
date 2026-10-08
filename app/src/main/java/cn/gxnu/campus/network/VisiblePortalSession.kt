@@ -188,13 +188,25 @@ class VisiblePortalSession(context: Context, private val wifi: WifiEnvironment, 
         }
     }
 
-    /** Fills the school's form and clicks its original login button once. False while the page is not ready. */
-    suspend fun autoFill(): Boolean {
+    /**
+     * Fills the school's form and clicks its original login button once. False while the page is not
+     * ready to submit.
+     *
+     * [onFilled] is invoked the first time the form's fields have actually been filled, which can
+     * happen well before the page is ready to be submitted. The two are reported separately because
+     * the user is looking at these fields: "filled but not submitted yet" is real progress, and
+     * collapsing it into "still waiting" is what made an empty login box look like a dead button.
+     */
+    suspend fun autoFill(onFilled: () -> Unit = {}): Boolean {
         val view = browser ?: return false
         val raw = suspendCancellableCoroutine<String?> { continuation ->
             view.evaluateJavascript(automation) { value -> if (continuation.isActive) continuation.resume(value) }
         }
-        return OfficialPortalAutomation.decision(raw).stage == BridgeStage.SUBMITTED
+        return when (OfficialPortalAutomation.decision(raw).stage) {
+            BridgeStage.SUBMITTED -> true
+            BridgeStage.FILLED -> { onFilled(); false }
+            else -> false
+        }
     }
 
     fun reload() {

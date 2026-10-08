@@ -133,27 +133,41 @@
     var buttons = elements('input[name="0MKKey"],button[name="0MKKey"]').filter(function (button) {
       return !button.disabled && !/注销|退出|logout|sign\s*out/i.test(String(button.value) + ' ' + String(button.textContent));
     });
-    if (accounts.length !== 1 || passwords.length !== 1 || buttons.length !== 1) return result('waiting');
-    var button = buttons[0];
-    var form = button.form || button.closest('form');
-    if (!originalSubmit(form) || accounts[0].form !== form || passwords[0].form !== form) return result('waiting');
-    if (elements('input[name="C1"][type="checkbox"]').some(function (checkbox) { return !checkbox.checked; })) {
-      return result('manual', 'PAGE');
-    }
 
-    var providers = elements('select[name="ISP_select"]');
-    if (providers.length !== 1) return result('manual', 'PAGE');
-    var select = providers[0];
-    var option = Array.prototype.find.call(select.options, function (item) {
-      return !item.disabled && String(item.value) === providerSuffix;
-    });
-    if (!option || select.disabled) return result('manual', 'PAGE');
-
+    // Fill the form the moment its fields exist, without waiting for the click to be possible.
+    // The school builds this form asynchronously and its shape varies, so an all-or-nothing bridge
+    // left the fields empty whenever any submit precondition was not met -- the user saw an empty
+    // login box and no explanation. Filling is idempotent and carries no risk; clicking is the part
+    // that needs every precondition. So they are decided separately, below.
     var normalizedAccount = String(account).trim();
     // The official form appends the selected suffix itself, just as when a student types.
     while (/@(?:ctc|cuc|cmc|gd)$/i.test(normalizedAccount)) {
       normalizedAccount = normalizedAccount.replace(/@(?:ctc|cuc|cmc|gd)$/i, '').trimEnd();
     }
+    var filledAccount = accounts.length === 1 && normalizedAccount.length > 0;
+    var filledPassword = passwords.length === 1 && String(password).length > 0;
+    if (filledAccount) setValue(accounts[0], normalizedAccount);
+    if (filledPassword) setValue(passwords[0], String(password));
+
+    var providers = elements('select[name="ISP_select"]');
+    var select = providers.length === 1 ? providers[0] : null;
+    var option = select ? Array.prototype.find.call(select.options, function (item) {
+      return !item.disabled && String(item.value) === providerSuffix;
+    }) : null;
+    if (option && !select.disabled) setValue(select, providerSuffix);
+
+    if (accounts.length !== 1 || passwords.length !== 1 || buttons.length !== 1) {
+      return result(filledAccount || filledPassword ? 'filled' : 'waiting');
+    }
+    var button = buttons[0];
+    var form = button.form || button.closest('form');
+    if (!originalSubmit(form) || accounts[0].form !== form || passwords[0].form !== form) {
+      return result('filled');
+    }
+    if (elements('input[name="C1"][type="checkbox"]').some(function (checkbox) { return !checkbox.checked; })) {
+      return result('manual', 'PAGE');
+    }
+    if (!select || !option || select.disabled) return result('manual', 'PAGE');
     if (!normalizedAccount || !String(password).length) return result('rejected', 'ACCOUNT');
 
     elements('input[type="checkbox"]').forEach(function (checkbox) {
@@ -163,9 +177,6 @@
         checkbox.dispatchEvent(new window.Event('change', { bubbles: true }));
       }
     });
-    setValue(select, providerSuffix);
-    setValue(accounts[0], normalizedAccount);
-    setValue(passwords[0], String(password));
     // Mark before click so synchronous callbacks and later polling cannot resubmit.
     marker.submitted = true;
     button.click();

@@ -132,7 +132,9 @@ class OfficialPortalTransport(context: Context, private val wifi: WifiEnvironmen
                         val raw = withContext(Dispatchers.Main.immediate) { evaluate(view ?: throw pageException(PortalFailure.UNREACHABLE), script) }
                         val decision = OfficialPortalAutomation.decision(raw)
                         when (decision.stage) {
-                            BridgeStage.WAITING -> Unit
+                            // The headless attempt only cares that the form is ready to submit; a form
+                            // it has just filled keeps it polling, exactly like one that is not up yet.
+                            BridgeStage.WAITING, BridgeStage.FILLED -> Unit
                             BridgeStage.SUBMITTED -> submitted = true
                             BridgeStage.REJECTED -> throw when (decision.reason) {
                                 "ACCOUNT" -> PortalException(PortalFailure.ACCOUNT, "学校未通过认证，请检查账号、密码和供应商。")

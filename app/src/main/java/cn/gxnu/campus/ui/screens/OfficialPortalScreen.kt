@@ -63,6 +63,7 @@ fun OfficialPortalScreen(
 ) {
     var view by remember(session) { mutableStateOf<WebView?>(null) }
     var autoFilled by remember(session) { mutableStateOf(false) }
+    var submitted by remember(session) { mutableStateOf(false) }
     val completion by session.completion.state.collectAsStateWithLifecycle()
     val page by session.page.collectAsStateWithLifecycle()
     val ready = page is PortalPageState.Ready
@@ -97,8 +98,8 @@ fun OfficialPortalScreen(
         // The school builds its form asynchronously from its own configuration.
         repeat(12) {
             delay(600)
-            if (autoFilled) return@LaunchedEffect
-            if (session.autoFill()) autoFilled = true
+            if (submitted) return@LaunchedEffect
+            if (session.autoFill { autoFilled = true }) { submitted = true; return@LaunchedEffect }
         }
     }
 
@@ -159,7 +160,9 @@ private fun progressNotice(completion: PortalCompletion, page: PortalPageState, 
     completion == PortalCompletion.AlreadyOnline -> "这张 Wi-Fi 已经可以上网，若尚未登录请在本页完成。"
     page is PortalPageState.Failed -> "学校认证页未能打开。"
     page is PortalPageState.Loading -> "正在打开学校登录页…"
-    autoFilled -> "已自动填写，正在提交认证。"
+    // The fields are filled; the button has not been pressed yet. Saying so is the difference
+    // between "the app did nothing" and "the app is one step away".
+    autoFilled -> "账号已自动填好，正在提交认证。"
     completion is PortalCompletion.Manual -> completion.reason
     else -> "正在准备学校登录页，可手动完成。"
 }
